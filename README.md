@@ -1,4 +1,4 @@
-# llama-dynamic-context
+# Llama Dynamic Ctx
 
 **Dynamic context management for LLMs**
 ...because humans don't hit 'context limit exceeded' and start forgetting your dog's name. Let's make this stuff uncanny as hell <3
@@ -59,15 +59,6 @@ TRIMMED TOKEN DISTRIBUTION:
 | **Context Quality** | Maintained facts | Remembered pets, names, details |
 
 *Measured from actual logs - see `examples/logs/random-trimming-output.txt`*
-
-## Performance
-
-| Context | Trim % | Memory | Speed |
-|---------|--------|--------|-------|
-| 2048    | 15%    | ~2.1GB | 24 t/s|
-| 4096    | 25%    | ~3.8GB | 18 t/s|
-
-*Phi-3-mini, i9-13900K, 32GB RAM*
 
 ## Building Notes
 
