@@ -1,9 +1,32 @@
 # Llama Dynamic Ctx
 
 **Dynamic context management for LLMs**
+
 ...because humans don't hit 'context limit exceeded' and start forgetting your dog's name. Let's make this stuff uncanny as hell <3
 
-> This is a **standalone fork** of llama.cpp focused specifically on dynamic context management
+
+This is my **standalone fork** of llama.cpp focused specifically on dynamic context management
+
+## Core Modifications
+
+**Added Files:**
+- `examples/random-trimming/random-trimming.cpp` - Main chat with continuous trimming
+- `examples/random-trimming/CMakeLists.txt` - Build configuration
+
+**Modified Core Components:**
+- **KV Cache Management**: `llama_kv_cache_trim_random()` integration
+- **Memory Tracking**: real-time cache utilization monitoring
+- **Token Position Mapping**: full context visualization
+- **Generation Pipeline**: automatic trim-before-generate cycle
+
+**Key Technical Changes:**
+```cpp
+// Before (upstream):
+// [prompt] → [generate] → [context_full?] → [error]
+
+// After (this fork):
+// [prompt] → [trim if needed] → [generate] → [repeat]
+```
 
 ## Quick Start
 
