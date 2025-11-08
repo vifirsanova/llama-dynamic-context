@@ -3,6 +3,8 @@
 **Dynamic context management for LLMs**
 ...because humans don't hit 'context limit exceeded' and start forgetting your dog's name. Let's make this stuff uncanny as hell <3
 
+> This is a **standalone fork** of llama.cpp focused specifically on dynamic context management
+
 ## Quick Start
 
 ```bash
