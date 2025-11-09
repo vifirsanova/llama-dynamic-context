@@ -1,6 +1,4 @@
-# Llama Dynamic Ctx
-
-**Dynamic context management for LLMs**
+# Dynamic context management for LLMs
 
 ...because humans don't hit 'context limit exceeded' and start forgetting your dog's name. Let's make this stuff uncanny as hell <3
 
@@ -12,12 +10,25 @@ This is my **standalone fork** of llama.cpp focused specifically on dynamic cont
 **Added Files:**
 - `examples/random-trimming/random-trimming.cpp` - Main chat with continuous trimming
 - `examples/random-trimming/CMakeLists.txt` - Build configuration
+- `logs/random-trimming-output.txt` - Full example conversation with trimming logs
 
-**Modified Core Components:**
-- **KV Cache Management**: `llama_kv_cache_trim_random()` integration
-- **Memory Tracking**: real-time cache utilization monitoring
-- **Token Position Mapping**: full context visualization
-- **Generation Pipeline**: automatic trim-before-generate cycle
+**Major Additions to llama-kv-cache.cpp:**
+- **Token Mapping** - Real-time position-to-token tracking
+- **Memory Analytics** - Сache utilization calculations
+- **Cell Management** - Direct cell eviction with verification
+- **Trim Algorithms** - Percentage-based random trimming
+- **Debug Integration** - External position tracking hooks
+
+**API Changes:**
+- New `trim_random()` method in KV-cache with percentage-based trimming
+- Additional debugging and visualization hooks throughout the stack
+- Modified generation loop for continuous context optimization
+
+**Preserved Compatibility:**
+- All original model formats (GGUF)
+- Existing CPU/GPU backends
+- Basic inference API surface
+- Core sampling algorithms
 
 **Key Technical Changes:**
 ```cpp
