@@ -1,6 +1,6 @@
 # Dynamic context management for LLMs
 
-...because humans don't hit 'context limit exceeded' and start forgetting your dog's name. Let's make this stuff uncanny as hell <3
+...because humans don't hit 'context limit exceeded'
 
 
 This is my **standalone fork** of llama.cpp focused specifically on dynamic context management
@@ -106,4 +106,4 @@ PRs welcome
 
 ## Distribution & Usage
 
--> do whatever the fuck you want with it
+-> do whatever you want with it
