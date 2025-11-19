@@ -16,7 +16,7 @@ This is my **standalone fork** of llama.cpp focused specifically on dynamic cont
 - **Token Mapping** - Real-time position-to-token tracking
 - **Memory Analytics** - Сache utilization calculations
 - **Cell Management** - Direct cell eviction with verification
-- **Trim Algorithms** - Percentage-based random trimming
+- **Trim Algorithms** - Percentage-based random trimming **with uniform distribution** ensures even token removal across the entire sequence to prevent localized information loss
 - **Debug Integration** - External position tracking hooks
 
 **API Changes:**
@@ -72,6 +72,7 @@ TRIMMED TOKEN DISTRIBUTION:
 ## Features
 
 - Continuous KV-cache trimming during generation
+- Uniform distribution sampling - prevents localized information loss by evenly distributing trimmed tokens across the entire context
 - Real-time cache utilization tracking
 - Visual cache state debugging
 - Mobile and desktop optimized
