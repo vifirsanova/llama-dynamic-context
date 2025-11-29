@@ -9,7 +9,9 @@ This is my **standalone fork** of llama.cpp focused specifically on dynamic cont
 
 **Added Files:**
 - `examples/random-trimming/random-trimming.cpp` - Main chat with continuous trimming
+- `examples/command-inference/command-inference.cpp` - **NEW: English to Linux command converter**
 - `examples/random-trimming/CMakeLists.txt` - Build configuration
+- `examples/command-inference/CMakeLists.txt` - **NEW: Build config for command inference**
 - `logs/random-trimming-output.txt` - Full example conversation with trimming logs
 
 **Major Additions to llama-kv-cache.cpp:**
@@ -39,6 +41,16 @@ This is my **standalone fork** of llama.cpp focused specifically on dynamic cont
 // [prompt] → [trim if needed] → [generate] → [repeat]
 ```
 
+## Dataset
+
+**NEW: LinLM Dataset** 
+
+A curated synthetic dataset for Linux command inference testing: [![HF Dataset](https://img.shields.io/badge/🤗%20Hugging%20Face-Dataset-blue)](https://huggingface.co/datasets/missvector/linux-commands)
+
+* 10+ languages
+* Arch Linux commands recognition
+* Fine-tune and test LLM for development, system administration, file operations, Git, Docker, and more
+
 ## Quick Start
 
 ```bash
@@ -46,7 +58,12 @@ git clone https://github.com/vifirsanova/llama-dynamic-context
 cd llama-dynamic-context
 mkdir build && cd build
 cmake .. -DLLAMA_BUILD_EXAMPLES=ON -DLLAMA_CURL=OFF -DLLAMA_BUILD_SERVER=OFF -DBUILD_SHARED_LIBS=OFF
+
+# Build chat with trimming
 make random-trimming -j$(nproc)
+
+# Build command inference tool
+make command-inference -j$(nproc)
 ```
 
 ## Example Usage
@@ -54,9 +71,14 @@ make random-trimming -j$(nproc)
 ```bash
 # 15% KV-cache trimming
 ./bin/random-trimming -m models/your-model.gguf -trim_pct 15
+
+# English to Linux command converter
+./bin/command-inference -m models/your-model.gguf
 ```
 
-## Output Preview
+## Random Trimming 
+
+**Output Preview**
 
 ```
 [KV_CACHE_STATE] Utilization: 49% → trimming 15%...
@@ -69,15 +91,13 @@ TRIMMED TOKEN DISTRIBUTION:
 
 [Full output example](logs/random-trimming-output.txt)
 
-## Features
+**Features**
 
 - Continuous KV-cache trimming during generation
 - Uniform distribution sampling - prevents localized information loss by evenly distributing trimmed tokens across the entire context
 - Real-time cache utilization tracking
 - Visual cache state debugging
 - Mobile and desktop optimized
-
-## Tested Setup
 
 **Test Setup:**
 - **Model:** Phi-3-mini-4k-instruct-q4.gguf
@@ -97,6 +117,27 @@ TRIMMED TOKEN DISTRIBUTION:
 
 *Measured from actual logs - see `examples/logs/random-trimming-output.txt`*
 
+## Command Inference
+
+**NEW:** Real-time English to Linux command converter using few-shot learning:
+
+```bash
+> show all files in directory
+ls -la
+> create new folder
+mkdir
+> delete all files  
+rm -rf *
+> show current user
+whoami
+```
+
+**Features:**
+- Zero configuration setup
+- Few-shot learning with curated examples
+- Handles complex commands (`cd folder && touch file.txt`)
+- Clean output format
+
 ## Building Notes
 
 If build fails: `rm -rf build && mkdir build` usually fixes it
@@ -105,6 +146,14 @@ If build fails: `rm -rf build && mkdir build` usually fixes it
 
 PRs welcome
 
-## Distribution & Usage
+## Citation
 
--> do whatever you want with it
+```
+@misc{llamadynamiccontext2025,
+  author = {V. Firsanova},
+  title = {Llama Dynamic Context},
+  year = {2025},
+  publisher = {GitHub},
+  howpublished = {\url{https://github.com/vifirsanova/llama-dynamic-context/}}
+}
+```
