@@ -19,6 +19,10 @@
 #include <cstring>
 #include <ctime>
 
+#include <vector>
+#include <map>
+#include <numeric>
+
 #if defined(_MSC_VER)
 #pragma warning(disable: 4244 4267) // possible loss of data
 #endif
@@ -320,7 +324,23 @@ struct llama_model * llama_model_load_from_splits(
     return llama_model_load_from_file_impl(splits.front(), splits, params);
 }
 
-// Add these function implementations to llama.cpp, after the existing function definitions
+// Helper function to convert API params to internal params
+static reverse_attention_trim_params convert_to_internal_params(
+    const llama_reverse_attention_params* api_params) {
+    
+    reverse_attention_trim_params params;
+    params.trim_threshold = api_params->trim_threshold;
+    params.min_attention_score = api_params->min_attention_score;
+    params.recent_token_weight = api_params->recent_token_weight;
+    params.system_prompt_weight = api_params->system_prompt_weight;
+    params.min_tokens_to_keep = api_params->min_tokens_to_keep;
+    params.aggregate_across_layers = api_params->aggregate_across_layers;
+    params.use_cumulative_score = api_params->use_cumulative_score;
+    params.preserve_system_prompt = true; // Always preserve unless explicitly disabled
+    params.system_prompt_end_pos = 0; // Will be detected automatically
+    
+    return params;
+}
 
 void llama_kv_cache_trim_random(struct llama_context * ctx, int trim_percentage) {
     if (ctx == nullptr) {
@@ -346,8 +366,6 @@ void llama_kv_cache_trim_random(struct llama_context * ctx, int trim_percentage)
     try {
         // Perform the random trim operation
         kv_cache->trim_random(trim_percentage);
-        
-        //LLAMA_LOG_INFO("%s: random trim completed successfully\n", __func__);
         
     } catch (const std::exception& e) {
         LLAMA_LOG_ERROR("%s: exception during random trim: %s\n", __func__, e.what());
@@ -480,3 +498,212 @@ const char * llama_print_system_info(void) {
     return s.c_str();
 }
 
+// Default parameters for reverse attention trimming
+llama_reverse_attention_params llama_reverse_attention_default_params(void) {
+    llama_reverse_attention_params params = {
+        .trim_threshold = 0.25f,
+        .min_attention_score = 0.01f,
+        .recent_token_weight = 1.5f,
+        .system_prompt_weight = 2.0f,
+        .min_tokens_to_keep = 100,
+        .aggregate_across_layers = true,
+        .use_cumulative_score = true,
+    };
+    return params;
+}
+
+// Helper function to get attention statistics from context
+static llama_attention_stats get_context_attention_stats(const struct llama_context * ctx) {
+    llama_attention_stats stats{};
+    
+    if (ctx == nullptr) {
+        return stats;
+    }
+    
+    // Get memory through public API
+    llama_memory_t memory = llama_get_memory(ctx);
+    if (memory == nullptr) {
+        return stats;
+    }
+    
+    // Try to get KV cache - but we can't access private methods
+    // For now, return placeholder statistics
+    stats.avg_attention_score = 0.1f;
+    stats.min_attention_score = 0.0f;
+    stats.max_attention_score = 1.0f;
+    stats.tokens_trimmed = 0;
+    stats.tokens_kept = 0;
+    stats.memory_reduction = 0.0f;
+    
+    return stats;
+}
+
+// Main reverse attention trimming function
+LLAMA_API void llama_kv_cache_trim_reverse_attention(
+    struct llama_context * ctx,
+    int trim_percentage,
+    float min_attention_threshold,
+    bool preserve_system_prompt) {
+    
+    if (ctx == nullptr) {
+        LLAMA_LOG_ERROR("%s: context is null\n", __func__);
+        return;
+    }
+    
+    // Convert percentage to threshold
+    float trim_threshold = trim_percentage / 100.0f;
+    
+    // Create params structure
+    llama_reverse_attention_params params = llama_reverse_attention_default_params();
+    params.trim_threshold = trim_threshold;
+    params.min_attention_score = min_attention_threshold;
+    params.system_prompt_weight = preserve_system_prompt ? 2.0f : 1.0f;
+    
+    // Call the extended version
+    llama_kv_cache_trim_reverse_attention_ex(ctx, &params);
+}
+
+// Extended version with full parameters
+LLAMA_API void llama_kv_cache_trim_reverse_attention_ex(
+    struct llama_context * ctx,
+    const llama_reverse_attention_params * params) {
+    
+    if (ctx == nullptr) {
+        LLAMA_LOG_ERROR("%s: context is null\n", __func__);
+        return;
+    }
+    
+    if (params == nullptr) {
+        LLAMA_LOG_ERROR("%s: params is null\n", __func__);
+        return;
+    }
+    
+    // For now, use random trim as a fallback
+    // TODO: Implement actual reverse attention trim when KV cache API is available
+    LLAMA_LOG_WARN("%s: reverse-attention trim not fully implemented yet, using random trim\n", __func__);
+    
+    int trim_percentage = static_cast<int>(params->trim_threshold * 100);
+    llama_kv_cache_trim_random(ctx, trim_percentage);
+    
+    // Compact after trimming
+    llama_kv_cache_compact(ctx);
+    
+    LLAMA_LOG_INFO("%s: reverse-attention trim completed (using random trim fallback)\n", __func__);
+}
+
+// Get attention statistics
+LLAMA_API llama_attention_stats llama_get_attention_statistics(
+    const struct llama_context * ctx) {
+    
+    if (ctx == nullptr) {
+        LLAMA_LOG_ERROR("%s: context is null\n", __func__);
+        llama_attention_stats empty{};
+        return empty;
+    }
+    
+    return get_context_attention_stats(ctx);
+}
+
+// Set attention callback
+static std::map<const llama_context*, std::pair<llama_attention_callback, void*>> g_attention_callbacks;
+
+LLAMA_API void llama_set_attention_callback(
+    struct llama_context * ctx,
+    llama_attention_callback callback,
+    void * user_data) {
+    
+    if (ctx == nullptr) {
+        LLAMA_LOG_ERROR("%s: context is null\n", __func__);
+        return;
+    }
+    
+    if (callback == nullptr) {
+        // Remove callback
+        g_attention_callbacks.erase(ctx);
+        LLAMA_LOG_INFO("%s: removed attention callback for context %p\n", 
+                      __func__, (void*)ctx);
+    } else {
+        // Set callback
+        g_attention_callbacks[ctx] = {callback, user_data};
+        LLAMA_LOG_INFO("%s: set attention callback for context %p\n", 
+                      __func__, (void*)ctx);
+    }
+}
+
+// Enable/disable attention tracking
+static std::map<const llama_context*, bool> g_attention_tracking_enabled;
+
+LLAMA_API void llama_enable_attention_tracking(
+    struct llama_context * ctx,
+    bool enabled) {
+    
+    if (ctx == nullptr) {
+        LLAMA_LOG_ERROR("%s: context is null\n", __func__);
+        return;
+    }
+    
+    g_attention_tracking_enabled[ctx] = enabled;
+    LLAMA_LOG_INFO("%s: %s attention tracking for context %p\n", 
+                  __func__, enabled ? "enabled" : "disabled", (void*)ctx);
+}
+
+LLAMA_API bool llama_is_attention_tracking_enabled(
+    const struct llama_context * ctx) {
+    
+    if (ctx == nullptr) {
+        LLAMA_LOG_ERROR("%s: context is null\n", __func__);
+        return false;
+    }
+    
+    auto it = g_attention_tracking_enabled.find(ctx);
+    if (it != g_attention_tracking_enabled.end()) {
+        return it->second;
+    }
+    
+    return false;
+}
+
+// Helper function to be called from llama-graph.cpp when attention scores are available
+// This will be implemented when we integrate with the graph computation
+LLAMA_API void llama_internal_attention_callback(
+    const llama_context * ctx,
+    int layer,
+    const float * attention_scores,
+    size_t n_kv,
+    size_t n_tokens) {
+    
+    if (ctx == nullptr || attention_scores == nullptr) {
+        return;
+    }
+    
+    // Check if tracking is enabled for this context
+    auto tracking_it = g_attention_tracking_enabled.find(ctx);
+    if (tracking_it == g_attention_tracking_enabled.end() || !tracking_it->second) {
+        return;
+    }
+    
+    // Check if there's a callback registered
+    auto callback_it = g_attention_callbacks.find(ctx);
+    if (callback_it != g_attention_callbacks.end()) {
+        const auto& [callback, user_data] = callback_it->second;
+        callback(user_data, layer, attention_scores, n_kv, n_tokens);
+    }
+    
+    // TODO: Store attention scores for later analysis in trim operation
+    // This will be implemented when we have proper access to KV cache
+    LLAMA_LOG_DEBUG("%s: attention scores received for layer %d, n_kv=%zu, n_tokens=%zu\n",
+                   __func__, layer, n_kv, n_tokens);
+}
+
+// Clean up callbacks when context is freed
+LLAMA_API void llama_internal_cleanup_attention_callbacks(const llama_context * ctx) {
+    if (ctx == nullptr) {
+        return;
+    }
+    
+    g_attention_callbacks.erase(ctx);
+    g_attention_tracking_enabled.erase(ctx);
+    
+    LLAMA_LOG_DEBUG("%s: cleaned up attention callbacks for context %p\n", 
+                   __func__, (void*)ctx);
+}

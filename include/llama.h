@@ -47,6 +47,10 @@
 #define LLAMA_STATE_SEQ_MAGIC   LLAMA_FILE_MAGIC_GGSQ
 #define LLAMA_STATE_SEQ_VERSION 2
 
+#define LLAMA_REVERSE_ATTENTION_DEFAULT_THRESHOLD 0.25f
+#define LLAMA_REVERSE_ATTENTION_MIN_SCORE 0.01f
+#define LLAMA_REVERSE_ATTENTION_MIN_TOKENS 100
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -186,6 +190,61 @@ extern "C" {
     };
 
     LLAMA_API const char * llama_flash_attn_type_name(enum llama_flash_attn_type flash_attn_type);
+
+	typedef struct llama_reverse_attention_params {
+		float trim_threshold;           // Порог тримминга (0.0-1.0)
+		float min_attention_score;      // Минимальный скор внимания для сохранения
+		float recent_token_weight;      // Вес недавних токенов
+		float system_prompt_weight;     // Вес системного промпта
+		int   min_tokens_to_keep;       // Минимальное количество токенов для сохранения
+		bool  aggregate_across_layers;  // Агрегировать attention по слоям
+		bool  use_cumulative_score;     // Использовать кумулятивные scores
+	} llama_reverse_attention_params;
+
+	LLAMA_API void llama_kv_cache_trim_reverse_attention_ex(
+		struct llama_context * ctx,
+		const llama_reverse_attention_params * params
+	);
+
+	typedef struct llama_attention_stats {
+		float avg_attention_score;      // Средний скор внимания
+		float min_attention_score;      // Минимальный скор
+		float max_attention_score;      // Максимальный скор
+		int   tokens_trimmed;           // Удалено токенов
+		int   tokens_kept;              // Сохранено токенов
+		float memory_reduction;         // Сокращение памяти в процентах
+	} llama_attention_stats;
+
+	LLAMA_API llama_attention_stats llama_get_attention_statistics(
+		const struct llama_context * ctx
+	);
+
+	// Коллбэк для захвата attention матриц
+	typedef void (*llama_attention_callback)(
+		void * user_data,
+		int layer,                     // Номер слоя
+		const float * attention_scores,// Матрица attention [n_kv x n_tokens]
+		size_t n_kv,                   // Количество ключей/значений
+		size_t n_tokens                // Количество токенов запроса
+	);
+
+	// Установить коллбэк для захвата attention
+	LLAMA_API void llama_set_attention_callback(
+		struct llama_context * ctx,
+		llama_attention_callback callback,
+		void * user_data
+	);
+
+	// Включить/выключить сбор статистики attention
+	LLAMA_API void llama_enable_attention_tracking(
+		struct llama_context * ctx,
+		bool enabled
+	);
+
+	// Получить текущее состояние отслеживания
+	LLAMA_API bool llama_is_attention_tracking_enabled(
+		const struct llama_context * ctx
+	);
 
     enum llama_split_mode {
         LLAMA_SPLIT_MODE_NONE  = 0, // single GPU
@@ -390,7 +449,7 @@ extern "C" {
     LLAMA_API struct llama_context_params        llama_context_default_params(void);
     LLAMA_API struct llama_sampler_chain_params  llama_sampler_chain_default_params(void);
     LLAMA_API struct llama_model_quantize_params llama_model_quantize_default_params(void);
-
+	LLAMA_API llama_reverse_attention_params llama_reverse_attention_default_params(void);
     // Initialize the llama + ggml backend
     // If numa is true, use NUMA optimizations
     // Call once at the start of the program
@@ -700,6 +759,13 @@ extern "C" {
     LLAMA_API void llama_kv_cache_trim_random(struct llama_context * ctx, int trim_percentage);
     // Add to llama.h
     LLAMA_API void llama_kv_cache_compact(struct llama_context * ctx);
+
+	LLAMA_API void llama_kv_cache_trim_reverse_attention(
+		struct llama_context * ctx,
+		int trim_percentage,
+		float min_attention_threshold,  // Минимальный порог внимания для сохранения
+		bool preserve_system_prompt     // Сохранять системный промпт
+	);
     //
     // State / sessions
     //

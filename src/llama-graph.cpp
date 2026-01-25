@@ -13,6 +13,108 @@
 #include <cmath>
 #include <cstring>
 
+#include <vector>
+#include <mutex>
+#include <algorithm>
+
+static bool reverse_attention_debug = false;
+
+void enable_reverse_attention_debug(bool enable) {
+    reverse_attention_debug = enable;
+    LLAMA_LOG_INFO("%s: Reverse attention debug %s\n", 
+                   __func__, enable ? "enabled" : "disabled");
+}
+
+// Forward declarations для reverse-attention
+struct llama_context;
+void llama_internal_attention_callback(
+    const llama_context * ctx,
+    int layer,
+    const float * attention_scores,
+    size_t n_kv,
+    size_t n_tokens);
+
+class llm_graph_input_attention_scores : public llm_graph_input_i {
+public:
+    llm_graph_input_attention_scores(const llama_context* ctx, int layer) 
+        : ctx(ctx), layer(layer) {}
+    
+    virtual ~llm_graph_input_attention_scores() = default;
+    
+    void set_input(const llama_ubatch * ubatch) override {
+        GGML_UNUSED(ubatch);
+        
+        if (!attention_tensor || !ctx) {
+            return;
+        }
+        
+        // Извлекаем attention scores из тензора
+        extract_attention_scores();
+    }
+    
+    bool can_reuse(const llm_graph_params & params) override {
+        GGML_UNUSED(params);
+        return false; // Не переиспользуем - всегда нужно новые scores
+    }
+    
+    void set_attention_tensor(ggml_tensor* tensor) {
+        attention_tensor = tensor;
+    }
+    
+private:
+    void extract_attention_scores() {
+        if (!attention_tensor || ggml_nelements(attention_tensor) == 0) {
+            return;
+        }
+        
+        // Размеры attention матрицы
+        size_t n_kv = attention_tensor->ne[0];
+        size_t n_tokens = attention_tensor->ne[1];
+        
+        if (n_kv == 0 || n_tokens == 0) {
+            return;
+        }
+        
+        // Выделяем память для scores
+        std::vector<float> attention_scores(n_kv * n_tokens);
+        
+        // Копируем данные из тензора GGML
+        ggml_backend_tensor_get(attention_tensor, attention_scores.data(), 0,
+                               attention_scores.size() * sizeof(float));
+        
+        if (reverse_attention_debug) {
+            // Найти min/max/avg scores
+            float min_score = std::numeric_limits<float>::max();
+            float max_score = std::numeric_limits<float>::lowest();
+            float sum_score = 0.0f;
+            int valid_count = 0;
+            
+            for (float score : attention_scores) {
+                if (score > -INFINITY && score < INFINITY) { // Игнорируем masked и invalid значения
+                    min_score = std::min(min_score, score);
+                    max_score = std::max(max_score, score);
+                    sum_score += score;
+                    valid_count++;
+                }
+            }
+            
+            if (valid_count > 0) {
+                LLAMA_LOG_INFO("Layer %d: Attention scores [%zux%zu]: min=%.4f, max=%.4f, avg=%.4f\n",
+                               layer, n_kv, n_tokens, 
+                               min_score, max_score, sum_score / valid_count);
+            }
+        }
+        
+        // Вызываем коллбэк для передачи scores в систему
+        llama_internal_attention_callback(ctx, layer, attention_scores.data(), 
+                                         n_kv, n_tokens);
+    }
+    
+    const llama_context* ctx;
+    int layer;
+    ggml_tensor* attention_tensor = nullptr;
+};
+
 void llm_graph_input_embd::set_input(const llama_ubatch * ubatch) {
     if (ubatch->token) {
         const int64_t n_tokens = ubatch->n_tokens;
@@ -126,11 +228,11 @@ void llm_graph_input_out_ids::set_input(const llama_ubatch * ubatch) {
 
     GGML_ASSERT(ubatch->output);
 
-    int n_outputs = 0;
+    int n_outputs_local = 0;
 
     for (int i = 0; i < n_tokens; ++i) {
         if (ubatch->output[i]) {
-            data[n_outputs++] = i;
+            data[n_outputs_local++] = i;
         }
     }
 }
@@ -591,12 +693,22 @@ llm_graph_context::llm_graph_context(const llm_graph_params & params) :
     res              (params.res),
     ctx0             (res->get_ctx()),
     gf               (res->get_gf()) {
+        // Инициализация отладочной переменной
+        debug_mode = reverse_attention_debug;
         res->set_params(params);
     }
 
 void llm_graph_context::cb(ggml_tensor * cur, const char * name, int il) const {
     if (cb_func) {
         cb_func(ubatch, cur, name, il);
+    }
+
+    if (debug_mode && (strstr(name, "kq") != nullptr || strstr(name, "attn") != nullptr)) {
+        // Логирование для отладки
+        LLAMA_LOG_DEBUG("%s: Attention tensor: %s, layer: %d, shape: [%d, %d, %d, %d]\n",
+                       __func__, name, il,
+                       (int)cur->ne[0], (int)cur->ne[1], 
+                       (int)cur->ne[2], (int)cur->ne[3]);
     }
 }
 
@@ -842,6 +954,8 @@ ggml_tensor * llm_graph_context::build_ffn(
     return cur;
 }
 
+// Изменить первую перегрузку:
+// В llama-graph.cpp должна быть такая реализация:
 ggml_tensor * llm_graph_context::build_moe_ffn(
          ggml_tensor * cur,
          ggml_tensor * gate_inp,
@@ -876,6 +990,7 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
         probs_in
     );
 }
+
 
 ggml_tensor * llm_graph_context::build_moe_ffn(
          ggml_tensor * cur,
@@ -2045,4 +2160,70 @@ int32_t llama_relative_position_bucket(llama_pos x, llama_pos y, uint64_t n_buck
     relative_bucket += (relative_position < max_exact ? relative_position : relative_position_if_large);
 
     return relative_bucket;
+}
+
+static std::vector<float> aggregate_attention_scores(
+    const std::vector<std::vector<float>>& layer_scores,
+    size_t n_kv,
+    size_t n_tokens,
+    bool average_across_layers = true) {
+    
+    if (layer_scores.empty() || n_kv == 0 || n_tokens == 0) {
+        return {};
+    }
+    
+    std::vector<float> aggregated(n_kv * n_tokens, 0.0f);
+    
+    for (const auto& scores : layer_scores) {
+        if (scores.size() != n_kv * n_tokens) {
+            continue; // Пропускаем некорректные размеры
+        }
+        
+        for (size_t i = 0; i < scores.size(); ++i) {
+            aggregated[i] += scores[i];
+        }
+    }
+    
+    if (average_across_layers && !layer_scores.empty()) {
+        float scale = 1.0f / layer_scores.size();
+        for (auto& val : aggregated) {
+            val *= scale;
+        }
+    }
+    
+    return aggregated;
+}
+
+// Функция для вычисления reverse attention importance
+static std::vector<float> calculate_reverse_attention_importance(
+    const std::vector<float>& attention_matrix,
+    size_t n_kv,
+    size_t n_tokens) {
+    
+    std::vector<float> importance_scores(n_kv, 0.0f);
+    
+    if (attention_matrix.empty() || n_kv == 0 || n_tokens == 0) {
+        return importance_scores;
+    }
+    
+    // Вычисляем обратное внимание: как часто каждый KV токен используется
+    for (size_t kv_idx = 0; kv_idx < n_kv; ++kv_idx) {
+        float total_score = 0.0f;
+        int count = 0;
+        
+        for (size_t token_idx = 0; token_idx < n_tokens; ++token_idx) {
+            float score = attention_matrix[token_idx * n_kv + kv_idx];
+            if (score > 0.01f) { // Игнорируем очень маленькие значения
+                total_score += score;
+                count++;
+            }
+        }
+        
+        if (count > 0) {
+            // Средний скор + частота использования
+            importance_scores[kv_idx] = total_score / count * (1.0f + count / (float)n_tokens);
+        }
+    }
+    
+    return importance_scores;
 }

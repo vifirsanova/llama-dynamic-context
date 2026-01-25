@@ -633,6 +633,9 @@ struct llm_graph_context {
        llm_ffn_gate_type   type_gate,
                      int   il) const;
 
+    // ПЕРВАЯ перегрузка (с 5 параметрами - делегирует ко второй)
+		// ПЕРВАЯ перегрузка (с 5 параметрами - делегирует ко второй)
+// ПЕРВАЯ перегрузка - сделать probs_in ОБЯЗАТЕЛЬНЫМ
     // build MoE FFN without bias tensors
     ggml_tensor * build_moe_ffn(
              ggml_tensor * cur,
@@ -672,8 +675,6 @@ struct llm_graph_context {
                      int   il,
              ggml_tensor * probs_in = nullptr) const;
 
-    //
-    // inputs
     //
 
     ggml_tensor * build_inp_embd(ggml_tensor * tok_embd) const;
@@ -826,6 +827,9 @@ struct llm_graph_context {
     void build_dense_out(
             ggml_tensor * dense_2,
             ggml_tensor * dense_3) const;
+
+	private:
+		mutable bool debug_mode;
 };
 
 // TODO: better name

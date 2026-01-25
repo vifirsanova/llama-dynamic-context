@@ -4,12 +4,25 @@
 #include "llama-cparams.h"
 #include "llama-graph.h"
 #include "llama-adapter.h"
-
+#include "llama-kv-cells.h"
 #include "ggml-cpp.h"
 #include "ggml-opt.h"
 
 #include <map>
 #include <vector>
+#include <mutex>
+#include <functional>
+
+// В llama-context.h (в начале файла, после #includes):
+
+// Forward declarations для классов из других файлов
+
+struct llama_vocab;
+
+// ДОБАВИТЬ ЭТУ СТРОКУ:
+class llama_kv_cache;  // или class llama_kv_cache, в зависимости от объявления
+
+// ... продолжение существующего кода ...
 
 struct llama_model;
 class llama_batch_allocr;
@@ -20,6 +33,11 @@ class llama_io_write_i;
 // "memory" as in abstract memory for the context
 struct llama_memory_i;
 struct llama_memory_context_i;
+
+// Forward declarations только - определения в llama-kv-cache.h
+struct attention_score_data;
+struct reverse_attention_trim_params;
+struct attention_statistics;
 
 // "memory" as in physical memory for a buffer type, in bytes
 struct llama_memory_breakdown_data {
@@ -181,12 +199,51 @@ struct llama_context {
             int64_t                          ndata_in_loop,
             int64_t                          t_loop_start);
 
+public:
+    uint32_t graph_max_nodes() const;
+
+    // can reuse the llm_graph_result instance of the context (for example to update a memory module)
+    llm_graph_result * get_gf_res_reserve() const;
+
+    // returns the result of ggml_backend_sched_graph_compute_async execution
+    ggml_status graph_compute(ggml_cgraph * gf, bool batched);
+
+    // reserve a graph with a dummy ubatch of the specified size
+    ggml_cgraph * graph_reserve(uint32_t n_tokens, uint32_t n_seqs, uint32_t n_outputs, const llama_memory_context_i * mctx, bool split_only = false);
+
 private:
     std::unique_ptr<llama_memory_i> memory;
     
     // Declare friend functions
     friend void llama_kv_cache_compact(struct llama_context * ctx);
-    friend void llama_kv_cache_trim_random(struct llama_context * ctx, int trim_percentage);    //
+    friend void llama_kv_cache_trim_random(struct llama_context * ctx, int trim_percentage);
+    friend void llama_kv_cache_trim_reverse_attention(
+        struct llama_context * ctx,
+        int trim_percentage,
+        float min_attention_threshold,
+        bool preserve_system_prompt);
+    friend void llama_kv_cache_trim_reverse_attention_ex(
+        struct llama_context * ctx,
+        const llama_reverse_attention_params * params);
+    friend void llama_set_attention_callback(
+        struct llama_context * ctx,
+        llama_attention_callback callback,
+        void * user_data);
+    friend void llama_enable_attention_tracking(
+        struct llama_context * ctx,
+        bool enabled);
+    friend bool llama_is_attention_tracking_enabled(
+        const struct llama_context * ctx);
+    friend llama_attention_stats llama_get_attention_statistics(
+        const struct llama_context * ctx);
+    friend void llama_internal_attention_callback(
+        const llama_context * ctx,
+        int layer,
+        const float * attention_scores,
+        size_t n_kv,
+        size_t n_tokens);
+    friend void llama_internal_cleanup_attention_callbacks(const llama_context * ctx);
+
     // output
     //
 
@@ -200,21 +257,6 @@ private:
     // graph
     //
 
-public:
-//    llama_memory_i* get_memory() const { return memory.get(); }
-
-    uint32_t graph_max_nodes() const;
-
-    // can reuse the llm_graph_result instance of the context (for example to update a memory module)
-    llm_graph_result * get_gf_res_reserve() const;
-
-    // returns the result of ggml_backend_sched_graph_compute_async execution
-    ggml_status graph_compute(ggml_cgraph * gf, bool batched);
-
-    // reserve a graph with a dummy ubatch of the specified size
-    ggml_cgraph * graph_reserve(uint32_t n_tokens, uint32_t n_seqs, uint32_t n_outputs, const llama_memory_context_i * mctx, bool split_only = false);
-
-private:
     llm_graph_params graph_params(
                         llm_graph_result * res,
                       const llama_ubatch & ubatch,
@@ -241,8 +283,6 @@ private:
     llama_adapter_loras loras;
 
     llama_cross cross; // TODO: tmp for handling cross-attention - need something better probably
-
-    //std::unique_ptr<llama_memory_i> memory;
 
     // decode output (2-dimensional array: [n_outputs][n_vocab])
     size_t  logits_size = 0; // capacity (of floats) for logits
@@ -316,6 +356,3 @@ private:
 
     mutable int32_t n_reused = 0; // number of times the previous graph was reused
 };
-
-//LLAMA_API void llama_kv_cache_trim_entropy_aware(struct llama_context * ctx, int trim_percentage);
-//LLAMA_API void llama_kv_cache_trim_random(struct llama_context * ctx, int trim_percentage);

@@ -8,11 +8,77 @@
 #include <unordered_map>
 #include <vector>
 #include <map>
+#include <mutex>
 
 struct llama_cparams;
 struct llama_hparams;
 struct llama_model;
 struct llama_context;
+
+// Forward declarations for structures
+struct attention_score_data;
+struct reverse_attention_trim_params;
+struct attention_statistics;
+struct llama_reverse_attention_params;
+
+// Structure for attention statistics (нужно объявить здесь, чтобы избежать incomplete type)
+struct attention_statistics {
+    float avg_score;
+    float min_score;
+    float max_score;
+    float score_variance;
+    int total_tokens;
+    int tokens_with_low_score;
+    int tokens_with_high_score;
+    
+    attention_statistics()
+        : avg_score(0.0f),
+          min_score(0.0f),
+          max_score(0.0f),
+          score_variance(0.0f),
+          total_tokens(0),
+          tokens_with_low_score(0),
+          tokens_with_high_score(0) {}
+};
+
+// Internal structure for tracking attention scores per token
+struct attention_score_data {
+    std::vector<float> scores;           // Attention scores from all layers/heads
+    float aggregated_score;              // Final importance score
+    llama_pos position;                  // Global position
+    uint32_t layer_count;                // How many layers contributed
+    uint64_t last_updated;               // Timestamp or step number
+    
+    attention_score_data() 
+        : aggregated_score(0.0f), 
+          position(0), 
+          layer_count(0), 
+          last_updated(0) {}
+};
+
+// Structure for reverse attention trim parameters (internal)
+struct reverse_attention_trim_params {
+    float trim_threshold;                // Percentage to trim (0.0-1.0)
+    float min_attention_score;           // Minimum attention score to keep
+    float recent_token_weight;           // Weight multiplier for recent tokens
+    float system_prompt_weight;          // Weight for system prompt tokens
+    int min_tokens_to_keep;              // Minimum tokens to keep
+    bool aggregate_across_layers;        // Average scores across layers
+    bool use_cumulative_score;           // Use cumulative or last score
+    bool preserve_system_prompt;         // Never trim system prompt
+    int system_prompt_end_pos;           // End position of system prompt
+    
+    reverse_attention_trim_params()
+        : trim_threshold(0.25f),
+          min_attention_score(0.01f),
+          recent_token_weight(1.5f),
+          system_prompt_weight(2.0f),
+          min_tokens_to_keep(100),
+          aggregate_across_layers(true),
+          use_cumulative_score(true),
+          preserve_system_prompt(true),
+          system_prompt_end_pos(0) {}
+};
 
 //
 // llama_kv_cache
@@ -37,6 +103,40 @@ public:
     void update_internal_counters();
     void update_sequence_position_tracking();
     llama_pos get_api_max_position() const;
+    
+    // Reverse attention trimming methods
+    void trim_reverse_attention(
+        int trim_percentage,
+        const reverse_attention_trim_params& params,
+        const std::map<llama_pos, std::string>* token_mapping = nullptr);
+    
+    void trim_reverse_attention_ex(
+        const llama_reverse_attention_params* api_params,
+        const std::map<llama_pos, std::string>* token_mapping = nullptr);
+    
+    // Attention tracking methods
+    void register_attention_scores(
+        int layer,
+        const std::vector<float>& attention_matrix,
+        size_t n_kv,
+        size_t n_tokens);
+    
+    void clear_attention_scores();
+    
+    // Get attention statistics
+    attention_statistics get_attention_statistics() const;
+    
+    // Set attention callback
+    void set_attention_callback(
+        llama_attention_callback callback,
+        void* user_data);
+    
+    // Enable/disable attention tracking
+    void enable_attention_tracking(bool enabled);
+    
+    // Check if attention tracking is enabled
+    bool is_attention_tracking_enabled() const;
+
     struct stream_copy_info {
         bool empty() const {
             assert(ssrc.size() == sdst.size());
@@ -284,42 +384,29 @@ private:
 
     bool state_read_meta(llama_io_read_i & io, uint32_t strm, uint32_t cell_count, llama_seq_id dest_seq_id = -1);
     bool state_read_data(llama_io_read_i & io, uint32_t strm, uint32_t cell_count);
-//
-/*
-    float calculate_cell_entropy(uint32_t stream_id, uint32_t cell_idx) const;
-    void calculate_importance_scores();
     
-    // Importance tracking
-    std::vector<std::vector<float>> importance_scores;
-
-    static constexpr float RECENCY_WEIGHT = 0.4f;
-    static constexpr float SEQUENCE_WEIGHT = 0.3f;
-    static constexpr float POSITION_WEIGHT = 0.2f;
-    static constexpr float USAGE_WEIGHT = 0.1f;
-    static constexpr float MIN_ENTROPY = 0.01f;
-    static constexpr float MAX_ENTROPY = 1.0f;
-    static constexpr float EARLY_POSITION_THRESHOLD = 10;
-    static constexpr float RECENT_POSITION_THRESHOLD = 10;
-
-    struct trim_candidate_t {
-        uint32_t stream_id;
-        uint32_t cell_idx;
-        float importance_score;
-        
-        trim_candidate_t(uint32_t s, uint32_t c, float imp) 
-            : stream_id(s), cell_idx(c), importance_score(imp) {}
-    };
+    // Helper methods for reverse attention
+    float calculate_token_importance(
+        llama_pos position,
+        const attention_score_data& scores,
+        const reverse_attention_trim_params& params) const;
     
-    float calculate_recency_score(uint32_t head_pos, uint32_t cell_idx, uint32_t total_cells) const;
-    float calculate_sequence_importance(const llama_kv_cells& cells, uint32_t cell_idx) const;
-    float calculate_position_importance(const llama_kv_cells& cells, uint32_t cell_idx) const;
-    float calculate_usage_importance(const llama_kv_cells& cells, uint32_t cell_idx) const;
+    std::vector<llama_pos> select_tokens_to_trim(
+        const std::map<llama_pos, float>& importance_scores,
+        const reverse_attention_trim_params& params) const;
+    
+    void update_attention_statistics();
 
-    uint32_t collect_trim_candidates(std::vector<trim_candidate_t>& candidates);
-    int calculate_trim_count(uint32_t total_non_empty, int trim_percentage, bool conservative);
-    int perform_trimming(const std::vector<trim_candidate_t>& candidates, int cells_to_trim);
-*/
-
+    // Reverse Attention Data Members
+    std::map<llama_pos, attention_score_data> attention_scores_;
+    mutable std::mutex attention_scores_mutex_;
+    
+    llama_attention_callback attention_callback_ = nullptr;
+    void* attention_callback_user_data_ = nullptr;
+    bool attention_tracking_enabled_ = false;
+    
+    attention_statistics current_stats_;
+    mutable std::mutex stats_mutex_;
 };
 
 class llama_kv_cache_context : public llama_memory_context_i {
