@@ -215,10 +215,6 @@ extern "C" {
 		float memory_reduction;         // Сокращение памяти в процентах
 	} llama_attention_stats;
 
-	LLAMA_API llama_attention_stats llama_get_attention_statistics(
-		const struct llama_context * ctx
-	);
-
 	// Коллбэк для захвата attention матриц
 	typedef void (*llama_attention_callback)(
 		void * user_data,

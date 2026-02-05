@@ -86,19 +86,16 @@ struct reverse_attention_trim_params {
 
 class llama_kv_cache : public llama_memory_i {
 public:
-    void trim_random(int trim_percentage, const std::map<llama_pos, std::string>* token_mapping = nullptr);
-
-    uint32_t get_non_empty_cell_count() const;
-    void debug_cell_states() const;
+    uint32_t get_non_empty_cell_count() const override;
+    void debug_cell_states() const override;
 
     static uint32_t get_padding(const llama_cparams & cparams);
-    bool compact();
     bool move_cell(uint32_t stream_id, uint32_t src_idx, uint32_t dst_idx);
     void update_external_position_tracking(const std::map<llama_pos, uint32_t>& position_remapping);
     void debug_attention_pattern() const;
     void renumber_global_positions();
 
-    llama_pos get_current_max_position() const;
+    llama_pos get_current_max_position() const override;
     uint32_t get_current_used_cells() const;
     void update_internal_counters();
     void update_sequence_position_tracking();
@@ -114,14 +111,17 @@ public:
         const llama_reverse_attention_params* api_params,
         const std::map<llama_pos, std::string>* token_mapping = nullptr);
     
+    // Более простая версия с минимальными параметрами
+    void trim_reverse_attention_simple(int trim_percentage) override;
+    
     // Attention tracking methods
     void register_attention_scores(
         int layer,
         const std::vector<float>& attention_matrix,
         size_t n_kv,
-        size_t n_tokens);
+        size_t n_tokens) override;
     
-    void clear_attention_scores();
+    void clear_attention_scores() override;
     
     // Get attention statistics
     attention_statistics get_attention_statistics() const;
@@ -129,13 +129,19 @@ public:
     // Set attention callback
     void set_attention_callback(
         llama_attention_callback callback,
-        void* user_data);
+        void* user_data) override;
     
     // Enable/disable attention tracking
-    void enable_attention_tracking(bool enabled);
+    void enable_attention_tracking(bool enabled) override;
     
     // Check if attention tracking is enabled
-    bool is_attention_tracking_enabled() const;
+    bool is_attention_tracking_enabled() const override;
+
+    // Вспомогательные методы для расчета важности
+    float calculate_token_importance(
+        llama_pos position,
+        const attention_score_data& scores,
+        const reverse_attention_trim_params& params) const;
 
     struct stream_copy_info {
         bool empty() const {
@@ -225,7 +231,21 @@ public:
     llama_memory_context_ptr init_update(llama_context * lctx, bool optimize) override;
 
     bool get_can_shift() const override;
-
+    
+    // Override base class methods
+    uint32_t get_size() const override;
+    uint32_t get_n_seq_max() const override { return n_seq_max; }
+    
+    // Access to internal components
+    llama_kv_cache * get_kv_cache() const override { return const_cast<llama_kv_cache*>(this); }
+    
+    // Stats and debug
+    uint32_t get_used_cells() const override { return get_current_used_cells(); }
+    
+    // Reverse attention and trimming
+    void trim_random(int trim_percentage, const std::map<llama_pos, std::string>* token_mapping = nullptr) override;
+    bool compact() override;
+    
     void clear(bool data) override;
 
     bool seq_rm  (llama_seq_id seq_id,                              llama_pos p0, llama_pos p1) override;
@@ -248,7 +268,6 @@ public:
     // llama_kv_cache specific API
     //
 
-    uint32_t get_size()     const;
     uint32_t get_n_stream() const;
 
     bool get_has_shift() const;
@@ -386,16 +405,20 @@ private:
     bool state_read_data(llama_io_read_i & io, uint32_t strm, uint32_t cell_count);
     
     // Helper methods for reverse attention
-    float calculate_token_importance(
-        llama_pos position,
-        const attention_score_data& scores,
-        const reverse_attention_trim_params& params) const;
-    
     std::vector<llama_pos> select_tokens_to_trim(
         const std::map<llama_pos, float>& importance_scores,
         const reverse_attention_trim_params& params) const;
     
     void update_attention_statistics();
+
+    // Вспомогательные методы для reverse attention
+    std::vector<llama_pos> select_tokens_to_trim_reverse(
+        const reverse_attention_trim_params& params,
+        int target_evictions) const;
+    
+    void evict_tokens_by_importance(
+        const std::vector<llama_pos>& tokens_to_evict,
+        const std::map<llama_pos, std::string>* token_mapping);
 
     // Reverse Attention Data Members
     std::map<llama_pos, attention_score_data> attention_scores_;
@@ -446,38 +469,54 @@ public:
 
     llama_memory_status  get_status() const override;
     const llama_ubatch & get_ubatch() const override;
+    const llama_context* get_context() const override { return lctx; }
+    
+    // Common methods from base interface
+    uint32_t get_head() const override { return 0; } // KV cache не использует head так же как recurrent
+    uint32_t get_size() const override { return kv ? kv->get_size() : 0; }
+    uint32_t get_n_kv() const override;
+    uint32_t get_n_rs() const override { return 0; }
+    int32_t get_rs_z() const override { return -1; }
+    uint32_t get_used_cells() const override { return kv ? kv->get_used_cells() : 0; }
+    uint32_t get_total_cells() const override { return kv ? kv->get_size() : 0; }
+    llama_pos get_max_position() const override { return kv ? kv->get_current_max_position() : 0; }
+    
+    // Tensor access
+    ggml_tensor * get_k(ggml_context * ctx, int32_t il) const override;
+    ggml_tensor * get_v(ggml_context * ctx, int32_t il) const override;
+    ggml_tensor * get_r_l(int32_t il) const override { return nullptr; }
+    ggml_tensor * get_s_l(int32_t il) const override { return nullptr; }
+    
+    // Copy operations
+    ggml_tensor * cpy_k(ggml_context * ctx, ggml_tensor * k_cur, ggml_tensor * k_idxs, int32_t il) const override;
+    ggml_tensor * cpy_v(ggml_context * ctx, ggml_tensor * v_cur, ggml_tensor * v_idxs, int32_t il) const override;
+    
+    // Input setup
+    ggml_tensor * build_input_k_idxs(ggml_context * ctx, const llama_ubatch & ubatch) const override;
+    ggml_tensor * build_input_v_idxs(ggml_context * ctx, const llama_ubatch & ubatch) const override;
+    
+    void set_input_k_idxs(ggml_tensor * dst, const llama_ubatch * ubatch) const override;
+    void set_input_v_idxs(ggml_tensor * dst, const llama_ubatch * ubatch) const override;
+    void set_input_k_shift(ggml_tensor * dst) const override;
+    void set_input_kq_mask(ggml_tensor * dst, const llama_ubatch * ubatch, bool causal_attn) const override;
+    void set_input_pos_bucket(ggml_tensor * dst, const llama_ubatch * ubatch) const override;
+    
+    // Type conversion
+    const llama_kv_cache_context * as_kv_cache() const override { return this; }
+    const llama_kv_cache_iswa_context * as_kv_cache_iswa() const override { return nullptr; }
+    const llama_memory_recurrent_context * as_recurrent() const override { return nullptr; }
+    const llama_memory_hybrid_context * as_hybrid() const override { return nullptr; }
+    
+    // Helper method
+    int32_t s_copy(int i) const override { return -1; }
 
     //
     // llama_kv_cache_context specific API
     //
 
-    uint32_t get_n_kv() const;
-
-    // get views of the current state of the cache
-    ggml_tensor * get_k(ggml_context * ctx, int32_t il) const;
-    ggml_tensor * get_v(ggml_context * ctx, int32_t il) const;
-
-    // store k_cur and v_cur in the cache based on the provided head location
-    // note: the heads in k_cur and v_cur should be layed out contiguously in memory
-    //   - k_cur  [n_embd_head_k, n_head_k, n_tokens]
-    //   - k_idxs [n_tokens]
-    //   - v_cur  [n_embd_head_v, n_head_v, n_tokens]
-    //   - v_idxs [n_tokens] or [n_tokens*n_embd_v_gqa] depending if V cache is transposed
-    ggml_tensor * cpy_k(ggml_context * ctx, ggml_tensor * k_cur, ggml_tensor * k_idxs, int32_t il) const;
-    ggml_tensor * cpy_v(ggml_context * ctx, ggml_tensor * v_cur, ggml_tensor * v_idxs, int32_t il) const;
-
     // create destination indices for each head of the current batch for where it would be written in the KV cache
     // the indices address the global KV cache (not per stream) - this is not relevant for the user of this API, but
     //   helps understand the implementation logic of cpy_k and cpy_v
-    ggml_tensor * build_input_k_idxs(ggml_context * ctx, const llama_ubatch & ubatch) const;
-    ggml_tensor * build_input_v_idxs(ggml_context * ctx, const llama_ubatch & ubatch) const;
-
-    void set_input_k_idxs(ggml_tensor * dst, const llama_ubatch * ubatch) const;
-    void set_input_v_idxs(ggml_tensor * dst, const llama_ubatch * ubatch) const;
-
-    void set_input_k_shift   (ggml_tensor * dst) const;
-    void set_input_kq_mask   (ggml_tensor * dst, const llama_ubatch * ubatch, bool causal_attn) const;
-    void set_input_pos_bucket(ggml_tensor * dst, const llama_ubatch * ubatch) const;
 
 private:
     llama_memory_status status;

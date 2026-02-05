@@ -51,6 +51,7 @@ struct time_meas {
 
 void replace_all(std::string & s, const std::string & search, const std::string & replace);
 
+
 // TODO: rename to llama_format ?
 LLAMA_ATTRIBUTE_FORMAT(1, 2)
 std::string format(const char * fmt, ...);

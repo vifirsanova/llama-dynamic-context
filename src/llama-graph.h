@@ -580,6 +580,7 @@ struct llm_graph_context {
     const llama_cross            * cross;
 
     const llm_graph_cb & cb_func;
+	const llama_context* get_llama_context() const;
 
     llm_graph_result * res;
 

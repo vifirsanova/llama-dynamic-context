@@ -140,7 +140,6 @@ void llama_memory_recurrent::clear(bool data) {
 }
 
 bool llama_memory_recurrent::seq_rm(llama_seq_id seq_id, llama_pos p0, llama_pos p1) {
-    //printf("[DEBUG] calling llama_memory_recurrent::seq_rm` with `seq_id=%d, p0=%d, p1=%d`\n", seq_id, p0, p1);
     uint32_t new_head = size;
 
     if (p0 < 0) {
@@ -162,7 +161,6 @@ bool llama_memory_recurrent::seq_rm(llama_seq_id seq_id, llama_pos p0, llama_pos
             const auto & cell = cells[tail_id];
             // partial intersection is invalid
             if ((0 < p0 && p0 < cell.pos) || (0 < p1 && p1 <= cell.pos)) {
-                //printf("[DEBUG] inside `llama_memory_recurrent::seq_rm`: partial intersection is invalid, so returning false\n");
                 return false;
             }
             // invalidate tails which will be cleared
@@ -173,7 +171,6 @@ bool llama_memory_recurrent::seq_rm(llama_seq_id seq_id, llama_pos p0, llama_pos
     } else {
         // seq_id is negative, then the range should include everything or nothing
         if (p0 != p1 && (p0 != 0 || p1 != std::numeric_limits<llama_pos>::max())) {
-            //printf("[DEBUG] inside `llama_memory_recurrent::seq_rm`: `seq_id` is negative, so returning false\n");
             return false;
         }
     }
@@ -372,6 +369,31 @@ std::map<ggml_backend_buffer_type_t, size_t> llama_memory_recurrent::memory_brea
         ret[ggml_backend_buffer_get_type(buf.get())] += ggml_backend_buffer_get_size(buf.get());
     }
     return ret;
+}
+
+void llama_memory_recurrent::debug_cell_states() const {
+    LLAMA_LOG_DEBUG("%s: Recurrent memory state:\n", __func__);
+    LLAMA_LOG_DEBUG("  Total cells: %u, Used: %u, Head: %u\n", size, used, head);
+    for (uint32_t i = 0; i < std::min(size, 10u); ++i) {
+        const auto& cell = cells[i];
+        if (!cell.is_empty()) {
+            LLAMA_LOG_DEBUG("  Cell[%u]: pos=%d, seq_ids=[", i, cell.pos);
+            for (auto seq_id : cell.seq_id) {
+                LLAMA_LOG_DEBUG("%d ", seq_id);
+            }
+            LLAMA_LOG_DEBUG("], tail=%d, src=%d\n", cell.tail, cell.src);
+        }
+    }
+}
+
+llama_pos llama_memory_recurrent::get_current_max_position() const {
+    llama_pos max_pos = -1;
+    for (const auto& cell : cells) {
+        if (!cell.is_empty() && cell.pos > max_pos) {
+            max_pos = cell.pos;
+        }
+    }
+    return max_pos;
 }
 
 llama_memory_context_ptr llama_memory_recurrent::init_batch(llama_batch_allocr & balloc, uint32_t n_ubatch, bool embd_all) {
@@ -929,10 +951,7 @@ bool llama_memory_recurrent::state_read_meta(llama_io_read_i & io, uint32_t cell
                 llama_seq_id seq_id;
                 io.read_to(&seq_id, sizeof(seq_id));
 
-                // TODO: llama_memory_recurrent should have a notion of max sequences
-                //if (seq_id < 0 || (uint32_t) seq_id >= llama_n_seq_max(ctx)) {
                 if (seq_id < 0) {
-                    //LLAMA_LOG_ERROR("%s: invalid seq_id, %d is out of range [0, %u)\n", __func__, seq_id, llama_n_seq_max(ctx));
                     LLAMA_LOG_ERROR("%s: invalid seq_id, %d is out of range [0, inf)\n", __func__, seq_id);
                     return false;
                 }
@@ -1089,15 +1108,20 @@ bool llama_memory_recurrent::state_read_data(llama_io_read_i & io, uint32_t cell
 // llama_memory_recurrent_context
 //
 
-llama_memory_recurrent_context::llama_memory_recurrent_context(llama_memory_status status) : status(status) {}
+llama_memory_recurrent_context::llama_memory_recurrent_context(llama_memory_status status) : 
+    status(status), mem(nullptr), ctx(nullptr) {}
 
 llama_memory_recurrent_context::llama_memory_recurrent_context(
-        llama_memory_recurrent * mem) : status(LLAMA_MEMORY_STATUS_SUCCESS), mem(mem), is_full(true) {
+        llama_memory_recurrent * mem,
+        llama_context * ctx) : 
+    status(LLAMA_MEMORY_STATUS_SUCCESS), mem(mem), ctx(ctx), is_full(true) {
 }
 
 llama_memory_recurrent_context::llama_memory_recurrent_context(
         llama_memory_recurrent * mem,
-        std::vector<llama_ubatch> ubatches) : status(LLAMA_MEMORY_STATUS_SUCCESS), mem(mem), ubatches(std::move(ubatches)) {}
+        std::vector<llama_ubatch> ubatches,
+        llama_context * ctx) : 
+    status(LLAMA_MEMORY_STATUS_SUCCESS), mem(mem), ctx(ctx), ubatches(std::move(ubatches)) {}
 
 llama_memory_recurrent_context::~llama_memory_recurrent_context() = default;
 
@@ -1137,30 +1161,76 @@ const llama_ubatch & llama_memory_recurrent_context::get_ubatch() const {
     return ubatches[i_next];
 }
 
-uint32_t llama_memory_recurrent_context::get_n_rs() const {
-    return is_full ? mem->size : mem->n;
+const llama_context* llama_memory_recurrent_context::get_context() const {
+    return ctx;
 }
 
 uint32_t llama_memory_recurrent_context::get_head() const {
+    if (!mem) return 0;
     return is_full ? 0 : mem->head;
 }
 
-int32_t llama_memory_recurrent_context::get_rs_z() const {
-    return is_full ? 0 : mem->rs_z;
-}
-
 uint32_t llama_memory_recurrent_context::get_size() const {
+    if (!mem) return 0;
     return mem->size;
 }
 
+uint32_t llama_memory_recurrent_context::get_n_rs() const {
+    if (!mem) return 0;
+    return is_full ? mem->size : mem->n;
+}
+
+int32_t llama_memory_recurrent_context::get_rs_z() const {
+    if (!mem) return -1;
+    return is_full ? 0 : mem->rs_z;
+}
+
+uint32_t llama_memory_recurrent_context::get_used_cells() const {
+    if (!mem) return 0;
+    return mem->used;
+}
+
+uint32_t llama_memory_recurrent_context::get_total_cells() const {
+    if (!mem) return 0;
+    return mem->size;
+}
+
+llama_pos llama_memory_recurrent_context::get_max_position() const {
+    if (!mem) return 0;
+    llama_pos max_pos = -1;
+    for (const auto& cell : mem->cells) {
+        if (!cell.is_empty() && cell.pos > max_pos) {
+            max_pos = cell.pos;
+        }
+    }
+    return max_pos;
+}
+
 ggml_tensor * llama_memory_recurrent_context::get_r_l(int32_t il) const {
+    if (!mem || il < 0 || il >= (int32_t)mem->r_l.size()) {
+        return nullptr;
+    }
     return mem->r_l[il];
 }
 
 ggml_tensor * llama_memory_recurrent_context::get_s_l(int32_t il) const {
+    if (!mem || il < 0 || il >= (int32_t)mem->s_l.size()) {
+        return nullptr;
+    }
     return mem->s_l[il];
 }
 
 int32_t llama_memory_recurrent_context::s_copy(int i) const {
-    return  mem->cells[i + mem->head].src0;
+    if (!mem) return -1;
+    return mem->cells[i + mem->head].src0;
+}
+
+void llama_memory_recurrent_context::update_cache() const {
+    if (!mem) return;
+    
+    cached_head = get_head();
+    cached_size = get_size();
+    cached_n_rs = get_n_rs();
+    cached_rs_z = get_rs_z();
+    cached_used = get_used_cells();
 }

@@ -16,6 +16,7 @@
 #include <mutex>
 #include <queue>
 #include <unordered_map>
+#include <numeric>  // Для std::accumulate
 
 //
 // llama_kv_cache
@@ -1929,209 +1930,6 @@ bool llama_kv_cache::state_read_data(llama_io_read_i & io, uint32_t strm, uint32
     return true;
 }
 
-//float llama_kv_cache::calculate_recency_score(uint32_t head_pos, uint32_t cell_idx, uint32_t total_cells) const {
-//    if (head_pos > cell_idx) {
-//        return 1.0f - (float)(head_pos - cell_idx) / total_cells;
-//    } else {
-//        return (float)(cell_idx - head_pos) / total_cells;
-//    }
-//}
-
-// Comment out entropy-aware trimming methods
-/*
-void llama_kv_cache::calculate_importance_scores() {
-    importance_scores.clear();
-    importance_scores.resize(v_cells.size());
-
-    for (uint32_t stream_id = 0; stream_id < v_cells.size(); ++stream_id) {
-        const auto & stream_cells = v_cells[stream_id];
-        importance_scores[stream_id].resize(stream_cells.size(), 0.0f);
-
-        for (uint32_t cell_idx = 0; cell_idx < stream_cells.size(); ++cell_idx) {
-            float entropy = calculate_cell_entropy(stream_id, cell_idx);
-            // Lower entropy = more focused = higher importance
-            importance_scores[stream_id][cell_idx] = 1.0f / (entropy + 1e-8f);
-        }
-    }
-}
-
-float llama_kv_cache::calculate_position_importance(const llama_kv_cells& cells, uint32_t cell_idx) const {
-    llama_pos cell_position = cells.pos_get(cell_idx);
-
-    // Very early positions (system prompts, initial context) are important
-    if (cell_position < EARLY_POSITION_THRESHOLD) {
-        return 0.1f; // Very important
-    }
-
-    // Recent positions are also important
-    if (cells.seq_count(cell_idx) == 1) {
-        llama_seq_id seq_id = cells.seq_get(cell_idx);
-        llama_pos seq_max_pos = cells.seq_pos_max(seq_id);
-        if (cell_position > seq_max_pos - RECENT_POSITION_THRESHOLD) {
-            return 0.3f; // Important (recent context)
-        }
-    }
-
-    return 0.7f; // Middle positions or multiple sequences are less critical
-}
-
-float llama_kv_cache::calculate_usage_importance(const llama_kv_cells& cells, uint32_t cell_idx) const {
-    uint32_t seq_count = cells.seq_count(cell_idx);
-    return 1.0f - (float)seq_count / n_seq_max;
-}
-
-float llama_kv_cache::calculate_sequence_importance(const llama_kv_cells& cells, uint32_t cell_idx) const {
-    // Check if this cell contains system prompt sequences (usually seq_id 0)
-    if (cells.seq_has(cell_idx, 0)) {
-        return 0.2f; // System prompts are very important (low entropy)
-    }
-
-    // Check if this is part of the main conversation thread
-    if (cells.seq_count(cell_idx) == 1) {
-        llama_seq_id seq_id = cells.seq_get(cell_idx);
-        // Main thread is usually lower sequence IDs
-        return 0.2f + (float)seq_id * 0.1f;
-    }
-
-    // Multiple sequences sharing this cell - medium importance
-    return 0.6f;
-}
-
-uint32_t llama_kv_cache::collect_trim_candidates(std::vector<trim_candidate_t>& candidates) {
-    uint32_t total_non_empty = 0;
-
-    for (uint32_t stream_id = 0; stream_id < v_cells.size(); ++stream_id) {
-        const auto& stream_cells = v_cells[stream_id];
-
-        for (uint32_t cell_idx = 0; cell_idx < stream_cells.size(); ++cell_idx) {
-            if (!stream_cells.is_empty(cell_idx)) {
-                candidates.push_back(trim_candidate_t(
-                    stream_id,
-                    cell_idx,
-                    importance_scores[stream_id][cell_idx]
-                ));
-                total_non_empty++;
-            }
-        }
-    }
-
-    return total_non_empty;
-}
-
-int llama_kv_cache::calculate_trim_count(uint32_t total_non_empty, int trim_percentage, bool conservative) {
-    int base_trim_count = total_non_empty * trim_percentage / 100;
-
-    if (conservative) {
-        // Be more conservative: trim fewer cells and avoid trimming very recent ones
-        base_trim_count = base_trim_count * 2 / 3; // Trim 2/3 of the requested amount
-    }
-
-    // Ensure we don't trim all cells
-    return std::min(base_trim_count, static_cast<int>(total_non_empty - 1));
-}
-
-int llama_kv_cache::perform_trimming(const std::vector<trim_candidate_t>& candidates, int cells_to_trim) {
-    int trimmed_count = 0;
-
-    for (int i = 0; i < cells_to_trim && i < (int)candidates.size(); ++i) {
-        const auto& candidate = candidates[i];
-
-        // For conservative mode, skip trimming very important cells
-        if (candidate.importance_score > 0.8f) { // High importance threshold
-            continue;
-        }
-
-        // Clear this cell using existing seq_rm functionality
-        // We remove all sequences from this specific cell
-        seq_rm(-1, candidate.cell_idx, candidate.cell_idx + 1);
-        trimmed_count++;
-
-        if (debug > 0) {
-            LLAMA_LOG_DEBUG("%s: trimmed cell [stream:%u, idx:%u] with importance %.3f\n",
-                   __func__, candidate.stream_id, candidate.cell_idx, candidate.importance_score);
-        }
-    }
-
-    return trimmed_count;
-}
-
-float llama_kv_cache::calculate_cell_entropy(uint32_t stream_id, uint32_t cell_idx) const {
-    if (stream_id >= v_cells.size() || cell_idx >= v_cells[stream_id].size()) {
-        return MAX_ENTROPY; // Invalid cell = high entropy (unimportant)
-    }
-
-    const auto & cells = v_cells[stream_id];
-
-    if (cells.is_empty(cell_idx)) {
-        return MAX_ENTROPY; // Empty cells have max entropy (least important)
-    }
-
-    float entropy = 0.0f;
-
-    // Heuristic 1: Recency - newer cells are more important
-    const uint32_t head_pos = v_heads[stream_id];
-    float recency_score = calculate_recency_score(head_pos, cell_idx, cells.size());
-    entropy += (1.0f - recency_score) * RECENCY_WEIGHT;
-
-    // Heuristic 2: Sequence importance
-    float sequence_importance = calculate_sequence_importance(cells, cell_idx);
-    entropy += sequence_importance * SEQUENCE_WEIGHT;
-
-    // Heuristic 3: Position in sequence
-    float position_importance = calculate_position_importance(cells, cell_idx);
-    entropy += position_importance * POSITION_WEIGHT;
-
-    // Heuristic 4: Usage frequency
-    float usage_importance = calculate_usage_importance(cells, cell_idx);
-    entropy += usage_importance * USAGE_WEIGHT;
-
-    return std::max(MIN_ENTROPY, std::min(MAX_ENTROPY, entropy));
-}
-
-void llama_kv_cache::trim_entropy_aware(int trim_percentage, bool conservative) {
-    if (trim_percentage <= 0 || trim_percentage >= 100) {
-        LLAMA_LOG_WARN("%s: invalid trim percentage: %d\n", __func__, trim_percentage);
-        return;
-    }
-
-    LLAMA_LOG_INFO("%s: starting entropy-aware trim: %d%% (conservative: %s)\n",
-           __func__, trim_percentage, conservative ? "true" : "false");
-
-    // Calculate importance scores for all cells
-    calculate_importance_scores();
-
-    // Collect all non-empty cells with their importance scores
-    std::vector<trim_candidate_t> candidates;
-    uint32_t total_non_empty = collect_trim_candidates(candidates);
-
-    if (total_non_empty == 0) {
-        LLAMA_LOG_INFO("%s: no cells to trim\n", __func__);
-        return;
-    }
-
-    // Calculate how many cells to trim
-    int cells_to_trim = calculate_trim_count(total_non_empty, trim_percentage, conservative);
-
-    if (cells_to_trim <= 0) {
-        LLAMA_LOG_INFO("%s: no cells need to be trimmed\n", __func__);
-        return;
-    }
-
-    // Sort candidates by importance (least important first)
-    std::sort(candidates.begin(), candidates.end(),
-        [](const trim_candidate_t& a, const trim_candidate_t& b) {
-            return a.importance_score < b.importance_score;
-        });
-
-    // Trim the least important cells
-    int trimmed_count = perform_trimming(candidates, cells_to_trim);
-
-    LLAMA_LOG_INFO("%s: entropy-aware trim completed: evicted %d/%d cells (%d%% of non-empty)\n",
-           __func__, trimmed_count, total_non_empty,
-           (trimmed_count * 100) / total_non_empty);
-}
-*/
-
 // Convert API params to internal params
 static reverse_attention_trim_params convert_to_internal_params(
     const llama_reverse_attention_params* api_params) {
@@ -2144,13 +1942,13 @@ static reverse_attention_trim_params convert_to_internal_params(
     params.min_tokens_to_keep = api_params->min_tokens_to_keep;
     params.aggregate_across_layers = api_params->aggregate_across_layers;
     params.use_cumulative_score = api_params->use_cumulative_score;
-    params.preserve_system_prompt = true; // Всегда сохраняем системный промпт
-    params.system_prompt_end_pos = 0; // Будет определено автоматически
+    params.preserve_system_prompt = true; // Always preserve system prompt
+    params.system_prompt_end_pos = 0; // Will be determined automatically
     
     return params;
 }
 
-// Main reverse attention trimming implementation
+// Main reverse attention trimming implementation - УСОВЕРШЕНСТВОВАННАЯ ВЕРСИЯ
 void llama_kv_cache::trim_reverse_attention(
     int trim_percentage,
     const reverse_attention_trim_params& params,
@@ -2161,23 +1959,24 @@ void llama_kv_cache::trim_reverse_attention(
         return;
     }
     
+    // Логируем начало
     LLAMA_LOG_INFO("%s: starting reverse-attention trim: %d%%\n", 
            __func__, trim_percentage);
     
-    // Get current state of the cache
-    uint32_t total_used_before = get_current_used_cells();
-    if (total_used_before == 0) {
+    // Подсчитываем использованные ячейки
+    uint32_t total_used = get_current_used_cells();
+    if (total_used == 0) {
         LLAMA_LOG_INFO("%s: no cells to trim\n", __func__);
         return;
     }
     
-    // Calculate how many tokens to trim
-    int target_evictions = total_used_before * trim_percentage / 100;
+    // Рассчитываем сколько удалять
+    int target_evictions = total_used * trim_percentage / 100;
     target_evictions = std::max(1, target_evictions);
     
-    // Ensure we keep minimum number of tokens
-    if (total_used_before - target_evictions < params.min_tokens_to_keep) {
-        target_evictions = total_used_before - params.min_tokens_to_keep;
+    // Гарантируем минимум оставляемых токенов
+    if (total_used - target_evictions < params.min_tokens_to_keep) {
+        target_evictions = total_used - params.min_tokens_to_keep;
         if (target_evictions < 1) {
             LLAMA_LOG_INFO("%s: cannot trim below minimum tokens (%d)\n", 
                    __func__, params.min_tokens_to_keep);
@@ -2185,156 +1984,17 @@ void llama_kv_cache::trim_reverse_attention(
         }
     }
     
-    // Collect all occupied cells with their importance scores
-    struct token_info {
-        llama_pos position;
-        uint32_t stream_id;
-        uint32_t cell_idx;
-        float importance_score;
-        bool is_system_prompt;
-    };
+    // Выбираем токены для удаления на основе важности
+    std::vector<llama_pos> tokens_to_evict = select_tokens_to_trim_reverse(params, target_evictions);
     
-    std::vector<token_info> all_tokens;
-    llama_pos max_position = get_current_max_position();
+    // Удаляем выбранные токены
+    evict_tokens_by_importance(tokens_to_evict, token_mapping);
     
-    for (uint32_t stream_id = 0; stream_id < n_stream; ++stream_id) {
-        const auto& cells = v_cells[stream_id];
-        
-        for (uint32_t cell_idx = 0; cell_idx < cells.size(); ++cell_idx) {
-            if (!cells.is_empty(cell_idx)) {
-                llama_pos position = cells.pos_get(cell_idx);
-                
-                token_info info;
-                info.position = position;
-                info.stream_id = stream_id;
-                info.cell_idx = cell_idx;
-                info.is_system_prompt = (position < params.system_prompt_end_pos);
-                
-                // Calculate importance score based on reverse attention
-                // For PoC, we'll use a simple heuristic:
-                // 1. Recent tokens are more important
-                // 2. System prompt tokens are very important
-                // 3. Tokens with actual attention scores are more important
-                
-                float base_score = 1.0f;
-                
-                // Apply position-based weighting
-                if (info.is_system_prompt && params.preserve_system_prompt) {
-                    base_score *= params.system_prompt_weight;
-                }
-                
-                // Recent tokens get higher weight
-                float recency_factor = 1.0f + 
-                    (params.recent_token_weight - 1.0f) * 
-                    (float(position) / float(max_position + 1));
-                base_score *= recency_factor;
-                
-                // Check if we have actual attention scores for this token
-                std::lock_guard<std::mutex> lock(attention_scores_mutex_);
-                auto it = attention_scores_.find(position);
-                if (it != attention_scores_.end()) {
-                    const auto& score_data = it->second;
-                    
-                    if (params.aggregate_across_layers && !score_data.scores.empty()) {
-                        // Use aggregated attention score
-                        float avg_score = std::accumulate(
-                            score_data.scores.begin(), 
-                            score_data.scores.end(), 0.0f) / score_data.scores.size();
-                        
-                        base_score *= (1.0f + avg_score * 10.0f); // Scale attention score
-                    }
-                }
-                
-                info.importance_score = base_score;
-                all_tokens.push_back(info);
-            }
-        }
-    }
+    // Логируем результаты
+    LLAMA_LOG_INFO("%s: reverse-attention trim completed: evicted %zu/%d tokens\n",
+           __func__, tokens_to_evict.size(), target_evictions);
     
-    // Sort by importance (least important first)
-    std::sort(all_tokens.begin(), all_tokens.end(),
-        [](const token_info& a, const token_info& b) {
-            return a.importance_score < b.importance_score;
-        });
-    
-    // Select tokens to trim
-    std::vector<llama_pos> evicted_positions;
-    int successful_evictions = 0;
-    int system_tokens_preserved = 0;
-    
-    for (int i = 0; i < target_evictions && i < (int)all_tokens.size(); ++i) {
-        const auto& token = all_tokens[i];
-        
-        // Skip system prompt tokens if configured to preserve them
-        if (params.preserve_system_prompt && token.is_system_prompt) {
-            system_tokens_preserved++;
-            continue;
-        }
-        
-        // Skip tokens with high attention scores
-        if (token.importance_score > params.min_attention_score * 10.0f) {
-            continue;
-        }
-        
-        // Evict the token
-        auto& cells = v_cells[token.stream_id];
-        if (!cells.is_empty(token.cell_idx)) {
-            llama_pos pos_before = cells.pos_get(token.cell_idx);
-            
-            cells.rm(token.cell_idx);
-            
-            if (cells.is_empty(token.cell_idx)) {
-                successful_evictions++;
-                evicted_positions.push_back(pos_before);
-                
-                // Update head if needed
-                if (token.cell_idx < v_heads[token.stream_id]) {
-                    v_heads[token.stream_id] = token.cell_idx;
-                }
-                
-                // Log token being trimmed if mapping is available
-                if (token_mapping) {
-                    auto it = token_mapping->find(pos_before);
-                    if (it != token_mapping->end()) {
-                        std::string token_text = it->second;
-                        // Clean up token text
-                        size_t pos_nl;
-                        while ((pos_nl = token_text.find('\n')) != std::string::npos) {
-                            token_text.replace(pos_nl, 1, "\\n");
-                        }
-                        while ((pos_nl = token_text.find('\t')) != std::string::npos) {
-                            token_text.replace(pos_nl, 1, "\\t");
-                        }
-                        LLAMA_LOG_DEBUG("%s: trimmed token at pos %d: '%s' (score: %.3f)\n",
-                               __func__, pos_before, token_text.c_str(), token.importance_score);
-                    }
-                }
-            }
-        }
-    }
-    
-    // Log evicted positions for external tracking
-    fprintf(stderr, "[REVERSE_ATTENTION_TRIMMING_POSITIONS]");
-    for (llama_pos pos : evicted_positions) {
-        fprintf(stderr, " %d", pos);
-    }
-    fprintf(stderr, "\n");
-    
-    // Update statistics
-    uint32_t total_used_after = get_current_used_cells();
-    
-    // Log results
-    LLAMA_LOG_INFO("%s: reverse-attention trim completed\n", __func__);
-    LLAMA_LOG_INFO("%s: evicted %d/%d tokens (%.1f%%)\n", 
-           __func__, successful_evictions, target_evictions,
-           (float)successful_evictions / target_evictions * 100.0f);
-    LLAMA_LOG_INFO("%s: preserved %d system prompt tokens\n", 
-           __func__, system_tokens_preserved);
-    LLAMA_LOG_INFO("%s: cache usage: %u -> %u cells (%.1f%% reduction)\n",
-           __func__, total_used_before, total_used_after,
-           (float)(total_used_before - total_used_after) / total_used_before * 100.0f);
-    
-    // Compact after trimming
+    // Компактируем после удаления
     compact();
 }
 
@@ -2356,6 +2016,22 @@ void llama_kv_cache::trim_reverse_attention_ex(
     
     // Call the main trimming function
     trim_reverse_attention(trim_percentage, params, token_mapping);
+}
+
+// Simple version with minimal parameters
+void llama_kv_cache::trim_reverse_attention_simple(int trim_percentage) {
+    reverse_attention_trim_params params;
+    params.trim_threshold = trim_percentage / 100.0f;
+    params.min_attention_score = 0.05f;
+    params.recent_token_weight = 1.3f;
+    params.system_prompt_weight = 3.0f;
+    params.min_tokens_to_keep = 50;
+    params.aggregate_across_layers = true;
+    params.use_cumulative_score = true;
+    params.preserve_system_prompt = true;
+    params.system_prompt_end_pos = 0; // Will be determined automatically
+    
+    trim_reverse_attention(trim_percentage, params, nullptr);
 }
 
 // Register attention scores from graph computation
@@ -2445,38 +2121,214 @@ void llama_kv_cache::clear_attention_scores() {
     LLAMA_LOG_DEBUG("%s: cleared all attention scores\n", __func__);
 }
 
-// Calculate token importance based on reverse attention
+// Calculate token importance based on reverse attention - УСОВЕРШЕНСТВОВАННАЯ ВЕРСИЯ
 float llama_kv_cache::calculate_token_importance(
     llama_pos position,
     const attention_score_data& scores,
     const reverse_attention_trim_params& params) const {
     
-    float importance = 1.0f; // Base importance
+    // Базовый скоринг
+    float importance = 1.0f;
     
-    // 1. Apply attention score weighting
-    if (!scores.scores.empty()) {
-        float attention_factor = scores.aggregated_score * 10.0f; // Scale up
-        importance *= (1.0f + attention_factor);
+    // 1. Использовать реальные attention scores если есть
+    if (!scores.scores.empty() && scores.aggregated_score > 0) {
+        importance *= (1.0f + scores.aggregated_score * 5.0f);
     }
     
-    // 2. Apply position-based weighting
+    // 2. Ранние токены важнее (позиционный фактор)
     llama_pos max_position = get_current_max_position();
     if (max_position > 0) {
-        // Recent tokens are more important
-        float position_ratio = float(position) / float(max_position);
-        float recency_bonus = 1.0f + (params.recent_token_weight - 1.0f) * position_ratio;
-        importance *= recency_bonus;
+        float position_ratio = 1.0f - (float)position / (float)max_position;
+        importance *= (1.0f + position_ratio * 2.0f); // Ранние токены получают бонус
     }
     
-    // 3. Apply system prompt weighting
-    if (position < params.system_prompt_end_pos && params.preserve_system_prompt) {
+    // 3. Системный промпт очень важен
+    if (position < params.system_prompt_end_pos) {
         importance *= params.system_prompt_weight;
+    }
+    
+    // 4. Recent tokens получают небольшой бонус
+    if (position > max_position - 10) {
+        importance *= params.recent_token_weight;
     }
     
     return importance;
 }
 
-// Select tokens to trim based on importance scores
+// Select tokens to trim based on reverse attention - УСОВЕРШЕНСТВОВАННАЯ ВЕРСИЯ
+std::vector<llama_pos> llama_kv_cache::select_tokens_to_trim_reverse(
+    const reverse_attention_trim_params& params,
+    int target_evictions) const {
+    
+    // Собираем все токены с их важностью
+    struct TokenScore {
+        llama_pos position;
+        float importance;
+        uint32_t stream_id;
+        uint32_t cell_idx;
+    };
+    
+    std::vector<TokenScore> all_tokens;
+    
+    // Сначала получаем максимум позиций
+    llama_pos max_position = get_current_max_position();
+    
+    // Устанавливаем system_prompt_end_pos, если не задан
+    reverse_attention_trim_params mutable_params = params;
+    if (mutable_params.system_prompt_end_pos == 0) {
+        // По умолчанию считаем первые 10% позиций системным промптом
+        mutable_params.system_prompt_end_pos = std::max(1, max_position / 10);
+    }
+    
+    // Собираем информацию о всех занятых ячейках
+    for (uint32_t stream_id = 0; stream_id < n_stream; ++stream_id) {
+        const auto& cells = v_cells[stream_id];
+        
+        for (uint32_t cell_idx = 0; cell_idx < cells.size(); ++cell_idx) {
+            if (!cells.is_empty(cell_idx)) {
+                llama_pos position = cells.pos_get(cell_idx);
+                
+                TokenScore ts;
+                ts.position = position;
+                ts.stream_id = stream_id;
+                ts.cell_idx = cell_idx;
+                
+                // Ищем attention scores для этой позиции
+                attention_score_data scores;
+                {
+                    std::lock_guard<std::mutex> lock(attention_scores_mutex_);
+                    auto it = attention_scores_.find(position);
+                    if (it != attention_scores_.end()) {
+                        scores = it->second;
+                    }
+                }
+                
+                // Рассчитываем важность
+                ts.importance = calculate_token_importance(position, scores, mutable_params);
+                all_tokens.push_back(ts);
+            }
+        }
+    }
+    
+    if (all_tokens.empty()) {
+        return {};
+    }
+    
+    // Сортируем по важности (наименее важные первыми)
+    std::sort(all_tokens.begin(), all_tokens.end(),
+        [](const TokenScore& a, const TokenScore& b) {
+            return a.importance < b.importance;
+        });
+    
+    // Выбираем токены для удаления
+    std::vector<llama_pos> tokens_to_evict;
+    int selected = 0;
+    
+    for (const auto& token : all_tokens) {
+        // Пропускаем системный промпт если нужно сохранять
+        if (mutable_params.preserve_system_prompt && 
+            token.position < mutable_params.system_prompt_end_pos) {
+            continue;
+        }
+        
+        // Пропускаем очень важные токены
+        if (token.importance > mutable_params.min_attention_score * 10.0f) {
+            continue;
+        }
+        
+        tokens_to_evict.push_back(token.position);
+        selected++;
+        
+        if (selected >= target_evictions) {
+            break;
+        }
+        
+        // Гарантируем минимум оставляемых токенов
+        if (all_tokens.size() - selected <= mutable_params.min_tokens_to_keep) {
+            break;
+        }
+    }
+    
+    return tokens_to_evict;
+}
+
+// Evict tokens by importance - УСОВЕРШЕНСТВОВАННАЯ ВЕРСИЯ
+void llama_kv_cache::evict_tokens_by_importance(
+    const std::vector<llama_pos>& tokens_to_evict,
+    const std::map<llama_pos, std::string>* token_mapping) {
+    
+    // Создаем обратное отображение: position -> (stream_id, cell_idx)
+    std::map<llama_pos, std::pair<uint32_t, uint32_t>> position_to_cell;
+    
+    for (uint32_t stream_id = 0; stream_id < n_stream; ++stream_id) {
+        auto& cells = v_cells[stream_id];
+        
+        for (uint32_t cell_idx = 0; cell_idx < cells.size(); ++cell_idx) {
+            if (!cells.is_empty(cell_idx)) {
+                llama_pos position = cells.pos_get(cell_idx);
+                position_to_cell[position] = {stream_id, cell_idx};
+            }
+        }
+    }
+    
+    // Удаляем токены
+    std::vector<llama_pos> evicted_positions;
+    
+    for (llama_pos position : tokens_to_evict) {
+        auto it = position_to_cell.find(position);
+        if (it != position_to_cell.end()) {
+            auto [stream_id, cell_idx] = it->second;
+            
+            auto& cells = v_cells[stream_id];
+            
+            // Запоминаем позицию перед удалением
+            llama_pos pos_before = cells.pos_get(cell_idx);
+            
+            // Удаляем ячейку
+            cells.rm(cell_idx);
+            
+            evicted_positions.push_back(pos_before);
+            
+            // Обновляем head если нужно
+            if (cell_idx < v_heads[stream_id]) {
+                v_heads[stream_id] = cell_idx;
+            }
+            
+            // Логируем если есть маппинг
+            if (token_mapping) {
+                auto token_it = token_mapping->find(pos_before);
+                if (token_it != token_mapping->end()) {
+                    std::string token_text = token_it->second;
+                    // Очистка текста для логов
+                    size_t pos_nl;
+                    while ((pos_nl = token_text.find('\n')) != std::string::npos) {
+                        token_text.replace(pos_nl, 1, "\\n");
+                    }
+                    while ((pos_nl = token_text.find('\t')) != std::string::npos) {
+                        token_text.replace(pos_nl, 1, "\\t");
+                    }
+                    
+                    LLAMA_LOG_DEBUG("Reverse attention trim: evicted token at pos %d: '%s'\n",
+                           pos_before, token_text.c_str());
+                }
+            }
+        }
+    }
+    
+    // Выводим позиции для внешнего трекинга (как в random trim)
+    if (!evicted_positions.empty()) {
+        fprintf(stderr, "[TRIMMING_POSITIONS]");
+        for (llama_pos pos : evicted_positions) {
+            fprintf(stderr, " %d", pos);
+        }
+        fprintf(stderr, "\n");
+        
+        fprintf(stderr, "[REVERSE_ATTENTION_TRIMMING] Evicted %zu tokens based on importance scores\n",
+                evicted_positions.size());
+    }
+}
+
+// Original select_tokens_to_trim method (for compatibility)
 std::vector<llama_pos> llama_kv_cache::select_tokens_to_trim(
     const std::map<llama_pos, float>& importance_scores,
     const reverse_attention_trim_params& params) const {
@@ -2603,6 +2455,7 @@ bool llama_kv_cache::is_attention_tracking_enabled() const {
     return attention_tracking_enabled_;
 }
 
+// Helper implementation for external C API
 void llama_kv_cache_trim_reverse_attention_impl(
     llama_kv_cache* kv_cache,
     int trim_percentage,
@@ -2678,8 +2531,6 @@ void llama_kv_cache::trim_random(int trim_percentage, const std::map<llama_pos, 
     
     // NEW: Store evicted positions for external tracking
     std::vector<llama_pos> evicted_positions;
-    // NEW: Log actual tokens being trimmed
-    //fprintf(stderr, "\n--- TOKENS BEING TRIMMED ---\n");
     
     for (int i = 0; i < target_evictions && i < (int)occupied_cells.size(); ++i) {
         auto [stream_id, cell_idx] = occupied_cells[i];
@@ -2704,10 +2555,7 @@ void llama_kv_cache::trim_random(int trim_percentage, const std::map<llama_pos, 
                     while ((pos_nl = token_text.find('\t')) != std::string::npos) {
                         token_text.replace(pos_nl, 1, "\\t");
                     }
-                    //fprintf(stderr, "TRIMMING_TOKEN: pos %d -> '%s'\n", pos_before, token_text.c_str());
-                } //else {
-                    //fprintf(stderr, "TRIMMING_TOKEN: pos %d -> [unknown token]\n", pos_before);
-                //}
+                }
             }
             
             cells.rm(cell_idx);  // DIRECTLY clear this cell
@@ -2719,12 +2567,8 @@ void llama_kv_cache::trim_random(int trim_percentage, const std::map<llama_pos, 
                 // Track position types for debugging
                 if (pos_before < 67) { // Adjust threshold as needed
                     low_pos_evictions++;
-                    //fprintf(stderr, "[TRIMMING_DETAIL] Evicted LOW position cell [%u]: pos %d → -1\n", 
-                    //       cell_idx, pos_before);
                 } else {
                     high_pos_evictions++;
-                    //fprintf(stderr, "[TRIMMING_DETAIL] Evicted HIGH position cell [%u]: pos %d → -1\n", 
-                    //       cell_idx, pos_before);
                 }
             }
             
@@ -2816,17 +2660,12 @@ void llama_kv_cache::renumber_global_positions() {
         auto & cells = v_cells[stream_id];
         llama_pos new_pos = i; // Sequential numbering from 0
         
-        //LLAMA_LOG_DEBUG("%s: stream %u cell %u: old_pos=%d, new_pos=%d\n", 
-        //       __func__, stream_id, cell_idx, old_pos, new_pos);
-        
         if (old_pos != new_pos) {
             // Use pos_add to properly update the position with sequence tracking
             // Calculate the delta needed to go from old_pos to new_pos
             llama_pos delta = new_pos - old_pos;
             cells.pos_add(cell_idx, delta);
             total_renumbered++;
-            //LLAMA_LOG_DEBUG("%s: RENUMBERED stream %u cell %u: %d -> %d\n", 
-            //       __func__, stream_id, cell_idx, old_pos, new_pos);
         }
     }
     
@@ -3082,9 +2921,6 @@ bool llama_kv_cache::move_cell(uint32_t stream_id, uint32_t src_idx, uint32_t ds
     
     // Clear the source cell only after successful copy
     cells.rm(src_idx);
-    
-    //LLAMA_LOG_DEBUG("%s: moved cell %u -> %u in stream %u\n", 
-    //       __func__, src_idx, dst_idx, stream_id);
     
     return true;
 }

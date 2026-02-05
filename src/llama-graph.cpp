@@ -698,6 +698,11 @@ llm_graph_context::llm_graph_context(const llm_graph_params & params) :
         res->set_params(params);
     }
 
+const llama_context* llm_graph_context::get_llama_context() const {
+    if (!mctx) return nullptr;
+    return mctx->get_context();
+}
+
 void llm_graph_context::cb(ggml_tensor * cur, const char * name, int il) const {
     if (cb_func) {
         cb_func(ubatch, cur, name, il);
@@ -954,8 +959,6 @@ ggml_tensor * llm_graph_context::build_ffn(
     return cur;
 }
 
-// Изменить первую перегрузку:
-// В llama-graph.cpp должна быть такая реализация:
 ggml_tensor * llm_graph_context::build_moe_ffn(
          ggml_tensor * cur,
          ggml_tensor * gate_inp,
@@ -990,7 +993,6 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
         probs_in
     );
 }
-
 
 ggml_tensor * llm_graph_context::build_moe_ffn(
          ggml_tensor * cur,
@@ -1109,7 +1111,6 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
 
     ggml_tensor * weights = ggml_get_rows(ctx0, probs, selected_experts); // [1, n_expert_used, n_tokens]
     cb(weights, "ffn_moe_weights", il);
-
 
     if (gating_op == LLAMA_EXPERT_GATING_FUNC_TYPE_SOFTMAX_WEIGHT) {
         weights = ggml_reshape_2d(ctx0, weights, n_expert_used, n_tokens);
@@ -1265,7 +1266,6 @@ ggml_tensor * llm_graph_context::build_inp_embd(ggml_tensor * tok_embd) const {
 
     if (ubatch.token) {
         inp->tokens = ggml_new_tensor_1d(ctx0, GGML_TYPE_I32, ubatch.n_tokens);
-        //cb(inp->tokens, "inp_tokens", -1);
         ggml_set_input(inp->tokens);
         res->t_tokens = inp->tokens;
 
@@ -1335,14 +1335,6 @@ ggml_tensor * llm_graph_context::build_inp_attn_scale() const {
 }
 
 ggml_tensor * llm_graph_context::build_inp_out_ids() const {
-    // note: when all tokens are output, we could skip this optimization to spare the ggml_get_rows() calls,
-    //       but this would make the graph topology depend on the number of output tokens, which can interere with
-    //       features that require constant topology such as pipline parallelism
-    //       ref: https://github.com/ggml-org/llama.cpp/pull/14275#issuecomment-2987424471
-    //if (n_outputs < n_tokens) {
-    //    return nullptr;
-    //}
-
     auto inp = std::make_unique<llm_graph_input_out_ids>(hparams, cparams, n_outputs);
 
     auto & cur = inp->out_ids;
@@ -1385,14 +1377,6 @@ ggml_tensor * llm_graph_context::build_inp_cross_embd() const {
     auto inp = std::make_unique<llm_graph_input_cross_embd>(cross);
 
     auto & cur = inp->cross_embd;
-
-    // if we have the output embeddings from the encoder, use them directly
-    // TODO: needs more work to be correct, for now just use the tensor shape
-    //if (cross->t_embd) {
-    //    cur = ggml_view_tensor(ctx0, cross->t_embd);
-
-    //    return cur;
-    //}
 
     const auto n_embd = !cross->v_embd.empty() ? cross->n_embd : hparams.n_embd;
     const auto n_enc  = !cross->v_embd.empty() ? cross->n_enc : hparams.n_ctx_train;
@@ -1497,38 +1481,26 @@ ggml_tensor * llm_graph_context::build_attn_mha(
         ggml_flash_attn_ext_set_prec (cur, GGML_PREC_F32);
 
         if (v_mla) {
-#if 0
-            // v_mla can be applied as a matrix-vector multiplication with broadcasting across dimension 3 == n_tokens.
-            // However, the code is optimized for dimensions 0 and 1 being large, so this is ineffient.
-            cur = ggml_reshape_4d(ctx0, cur, v_mla->ne[0], 1, n_head, n_tokens);
-            cur = ggml_mul_mat(ctx0, v_mla, cur);
-#else
-            // It's preferable to do the calculation as a matrix-matrix multiplication with n_tokens in dimension 1.
-            // The permutations are noops and only change how the tensor data is interpreted.
             cur = ggml_permute(ctx0, cur, 0, 2, 1, 3);
             cur = ggml_mul_mat(ctx0, v_mla, cur);
             cb(cur, "fattn_mla", il);
             cur = ggml_permute(ctx0, cur, 0, 2, 1, 3);
-            cur = ggml_cont(ctx0, cur); // Needed because ggml_reshape_2d expects contiguous inputs.
-#endif
+            cur = ggml_cont(ctx0, cur);
         }
 
         cur = ggml_reshape_2d(ctx0, cur, cur->ne[0]*cur->ne[1], cur->ne[2]*cur->ne[3]);
+        
+        // Flash attention - логируем что scores недоступны
+        if (reverse_attention_debug) {
+            LLAMA_LOG_INFO("Layer %d: Flash attention - attention scores not available\n", il);
+        }
     } else {
         ggml_tensor * kq = ggml_mul_mat(ctx0, k, q);
         cb(kq, "kq", il);
 
-        // note: this op tends to require high floating point range
-        //       while for some models F16 is enough, for others it is not, so we default to F32 here
         ggml_mul_mat_set_prec(kq, GGML_PREC_F32);
 
         if (arch == LLM_ARCH_GROK) {
-            // need to do the following:
-            // multiply by attn_output_multiplier
-            // and then :
-            // kq = 30 * tanh(kq / 30)
-            // before the softmax below
-
             kq = ggml_tanh(ctx0, ggml_scale(ctx0, kq, hparams.f_attn_out_scale / hparams.f_attn_logit_softcapping));
             cb(kq, "kq_tanh", il);
             kq = ggml_scale(ctx0, kq, hparams.f_attn_logit_softcapping);
@@ -1548,13 +1520,19 @@ ggml_tensor * llm_graph_context::build_attn_mha(
             kq = ggml_add(ctx0, kq, kq_b);
             cb(kq, "kq_plus_kq_b", il);
         }
+        
+        // НОВОЕ: Сохраняем attention scores ДО softmax для reverse attention
+        auto attention_input = std::make_unique<llm_graph_input_attention_scores>(
+            static_cast<const llama_context*>(mctx->get_context()), il);
+        attention_input->set_attention_tensor(kq);
+        res->add_input(std::move(attention_input));
 
+        // Продолжаем с softmax
         kq = ggml_soft_max_ext(ctx0, kq, kq_mask, kq_scale, hparams.f_max_alibi_bias);
         ggml_soft_max_add_sinks(kq, sinks);
         cb(kq, "kq_soft_max", il);
 
         if (!v_trans) {
-            // note: avoid this branch
             v = ggml_cont(ctx0, ggml_transpose(ctx0, v));
             cb(v, "v_cont", il);
         }
@@ -1562,7 +1540,6 @@ ggml_tensor * llm_graph_context::build_attn_mha(
         ggml_tensor * kqv = ggml_mul_mat(ctx0, v, kq);
         cb(kqv, "kqv", il);
 
-        // for MLA with the absorption optimization, we need to "decompress" from MQA back to MHA
         if (v_mla) {
             kqv = ggml_mul_mat(ctx0, v_mla, kqv);
             cb(kqv, "kqv_mla", il);
@@ -1574,7 +1551,6 @@ ggml_tensor * llm_graph_context::build_attn_mha(
         cur = ggml_cont_2d(ctx0, cur, cur->ne[0]*cur->ne[1], cur->ne[2]*cur->ne[3]);
 
         if (!cparams.offload_kqv) {
-            // all nodes between the KV store and the attention output are run on the CPU
             ggml_backend_sched_set_tensor_backend(sched, cur, backend_cpu);
         }
     }
@@ -1587,7 +1563,6 @@ ggml_tensor * llm_graph_context::build_attn_mha(
 llm_graph_input_attn_no_cache * llm_graph_context::build_attn_inp_no_cache() const {
     auto inp = std::make_unique<llm_graph_input_attn_no_cache>(hparams, cparams);
 
-    // note: there is no KV cache, so the number of KV values is equal to the number of tokens in the batch
     inp->self_kq_mask = ggml_new_tensor_4d(ctx0, GGML_TYPE_F32, n_tokens, GGML_PAD(n_tokens, GGML_KQ_MASK_PAD), 1, 1);
     ggml_set_input(inp->self_kq_mask);
 
@@ -1620,8 +1595,6 @@ ggml_tensor * llm_graph_context::build_attn(
             int       il) const {
     GGML_UNUSED(n_tokens);
 
-    // these nodes are added to the graph together so that they are not reordered
-    // by doing so, the number of splits in the graph is reduced
     ggml_build_forward_expand(gf, q_cur);
     ggml_build_forward_expand(gf, k_cur);
     ggml_build_forward_expand(gf, v_cur);
@@ -1629,11 +1602,6 @@ ggml_tensor * llm_graph_context::build_attn(
     const bool is_swa = hparams.is_swa(il);
 
     const auto & kq_mask = is_swa ? inp->get_kq_mask_swa() : inp->get_kq_mask();
-
-    // [TAG_NO_CACHE_PAD]
-    // TODO: if ubatch.equal_seqs() == true, we can split the three tensors below into ubatch.n_seqs_unq streams
-    //       but it might not be worth it: https://github.com/ggml-org/llama.cpp/pull/15636
-    //assert(!ubatch.equal_seqs() || (k_cur->ne[3] == 1 && k_cur->ne[3] == ubatch.n_seqs_unq));
 
     ggml_tensor * q = q_cur;
     ggml_tensor * k = k_cur;
@@ -1647,34 +1615,38 @@ ggml_tensor * llm_graph_context::build_attn(
     }
 
     if (wo_b) {
-        //cb(cur, "kqv_wo", il);
-    }
-
-    if (wo_b) {
         cur = ggml_add(ctx0, cur, wo_b);
     }
 
     return cur;
 }
 
+// ИСПРАВЛЕНО: Функция теперь принимает llama_memory_context_i* и делает dynamic_cast
 static std::unique_ptr<llm_graph_input_attn_kv> build_attn_inp_kv_impl(
            ggml_context * ctx0,
      const llama_ubatch & ubatch,
     const llama_hparams & hparams,
     const llama_cparams & cparams,
-    const llama_kv_cache_context * mctx_cur) {
-
-    auto inp = std::make_unique<llm_graph_input_attn_kv>(hparams, cparams, mctx_cur);
+    const llama_memory_context_i * mctx_cur) {
+    
+    // Динамическое приведение типа
+    const llama_kv_cache_context* kv_ctx = 
+        dynamic_cast<const llama_kv_cache_context*>(mctx_cur);
+    if (!kv_ctx) {
+        return nullptr;
+    }
+    
+    auto inp = std::make_unique<llm_graph_input_attn_kv>(hparams, cparams, kv_ctx);
 
     {
         GGML_ASSERT(hparams.swa_type == LLAMA_SWA_TYPE_NONE && "Use llama_kv_cache_iswa for SWA");
 
-        const auto n_kv     = mctx_cur->get_n_kv();
+        const auto n_kv     = kv_ctx->get_n_kv();
         const auto n_tokens = ubatch.n_tokens;
         const auto n_stream = cparams.kv_unified ? 1 : ubatch.n_seqs_unq;
 
-        inp->self_k_idxs = mctx_cur->build_input_k_idxs(ctx0, ubatch);
-        inp->self_v_idxs = mctx_cur->build_input_v_idxs(ctx0, ubatch);
+        inp->self_k_idxs = kv_ctx->build_input_k_idxs(ctx0, ubatch);
+        inp->self_v_idxs = kv_ctx->build_input_v_idxs(ctx0, ubatch);
 
         inp->self_kq_mask = ggml_new_tensor_4d(ctx0, GGML_TYPE_F32, n_kv, GGML_PAD(n_tokens/n_stream, GGML_KQ_MASK_PAD), 1, n_stream);
         ggml_set_input(inp->self_kq_mask);
@@ -1705,15 +1677,12 @@ ggml_tensor * llm_graph_context::build_attn(
         ggml_tensor * v_mla,
             float     kq_scale,
             int       il) const {
-    // these nodes are added to the graph together so that they are not reordered
-    // by doing so, the number of splits in the graph is reduced
     ggml_build_forward_expand(gf, q_cur);
     ggml_build_forward_expand(gf, k_cur);
     ggml_build_forward_expand(gf, v_cur);
 
     const auto * mctx_cur = inp->mctx;
 
-    // store to KV cache
     {
         const auto & k_idxs = inp->get_k_idxs();
         const auto & v_idxs = inp->get_v_idxs();
@@ -1734,7 +1703,6 @@ ggml_tensor * llm_graph_context::build_attn(
     if (wo) {
         cur = build_lora_mm(wo, cur);
         if (arch == LLM_ARCH_GLM4 || arch == LLM_ARCH_GLM4_MOE) {
-            // GLM4 and GLM4_MOE seem to have numerical issues with half-precision accumulators
             ggml_mul_mat_set_prec(cur, GGML_PREC_F32);
         }
     }
@@ -1758,8 +1726,6 @@ ggml_tensor * llm_graph_context::build_attn(
         ggml_tensor * v_mla,
             float     kq_scale,
             int       il) const {
-    // these nodes are added to the graph together so that they are not reordered
-    // by doing so, the number of splits in the graph is reduced
     ggml_build_forward_expand(gf, q_cur);
 
     if (k_cur) {
@@ -1776,7 +1742,6 @@ ggml_tensor * llm_graph_context::build_attn(
 
     const auto * mctx_cur = is_swa ? mctx_iswa->get_swa() : mctx_iswa->get_base();
 
-    // optionally store to KV cache
     if (k_cur) {
         const auto & k_idxs = is_swa ? inp->get_k_idxs_swa() : inp->get_k_idxs();
 
@@ -1800,10 +1765,6 @@ ggml_tensor * llm_graph_context::build_attn(
 
     if (wo) {
         cur = build_lora_mm(wo, cur);
-    }
-
-    if (wo_b) {
-        //cb(cur, "kqv_wo", il);
     }
 
     if (wo_b) {
@@ -1838,8 +1799,6 @@ ggml_tensor * llm_graph_context::build_attn(
         ggml_tensor * v_mla,
             float     kq_scale,
             int       il) const {
-    // these nodes are added to the graph together so that they are not reordered
-    // by doing so, the number of splits in the graph is reduced
     ggml_build_forward_expand(gf, q_cur);
     ggml_build_forward_expand(gf, k_cur);
     ggml_build_forward_expand(gf, v_cur);
@@ -1858,19 +1817,12 @@ ggml_tensor * llm_graph_context::build_attn(
     }
 
     if (wo_b) {
-        //cb(cur, "kqv_wo", il);
-    }
-
-    if (wo_b) {
         cur = ggml_add(ctx0, cur, wo_b);
     }
 
     return cur;
 }
 
-// TODO: maybe separate the inner implementation into a separate function
-//       like with the non-sliding window equivalent
-//       once sliding-window hybrid caches are a thing.
 llm_graph_input_attn_kv_iswa * llm_graph_context::build_attn_inp_kv_iswa() const {
     const auto * mctx_cur = static_cast<const llama_kv_cache_iswa_context *>(mctx);
 
@@ -1921,18 +1873,12 @@ ggml_tensor * llm_graph_context::build_rs(
 
     ggml_tensor * states = ggml_reshape_2d(ctx0, s, state_size, rs_size);
 
-    // Clear a single state which will then be copied to the other cleared states.
-    // Note that this is a no-op when the view is zero-sized.
     ggml_tensor * state_zero = ggml_view_1d(ctx0, states, state_size*(rs_zero >= 0), rs_zero*states->nb[1]*(rs_zero >= 0));
     ggml_build_forward_expand(gf, ggml_scale_inplace(ctx0, state_zero, 0));
 
-    // copy states
-    // NOTE: assuming the copy destinations are ALL contained between rs_head and rs_head + n_rs
-    // {state_size, rs_size} -> {state_size, n_seqs}
     ggml_tensor * output_states = get_state_rows(ctx0, states, state_copy_main);
     ggml_build_forward_expand(gf, output_states);
 
-    // copy extra states which won't be changed further (between n_seqs and n_rs)
     ggml_tensor * states_extra = ggml_get_rows(ctx0, states, state_copy_extra);
     ggml_build_forward_expand(gf,
         ggml_cpy(ctx0,
@@ -1942,14 +1888,22 @@ ggml_tensor * llm_graph_context::build_rs(
     return output_states;
 }
 
+// ИСПРАВЛЕНО: Функция теперь принимает llama_memory_context_i* и делает dynamic_cast
 static std::unique_ptr<llm_graph_input_rs> build_rs_inp_impl(
            ggml_context * ctx0,
      const llama_ubatch & ubatch,
-    const llama_memory_recurrent_context * mctx_cur) {
+    const llama_memory_context_i * mctx_cur) {
+    
+    // Динамическое приведение типа
+    const llama_memory_recurrent_context* rec_ctx = 
+        dynamic_cast<const llama_memory_recurrent_context*>(mctx_cur);
+    if (!rec_ctx) {
+        return nullptr;
+    }
+    
+    auto inp = std::make_unique<llm_graph_input_rs>(rec_ctx);
 
-    auto inp = std::make_unique<llm_graph_input_rs>(mctx_cur);
-
-    const int64_t n_rs   = mctx_cur->get_n_rs();
+    const int64_t n_rs   = rec_ctx->get_n_rs();
     const int64_t n_seqs = ubatch.n_seqs;
 
     inp->s_copy = ggml_new_tensor_1d(ctx0, GGML_TYPE_I32, n_rs);
@@ -2023,11 +1977,18 @@ ggml_tensor * llm_graph_context::build_rwkv_token_shift_store(
     );
 }
 
+// ИСПРАВЛЕНО: Используем dynamic_cast для приведения типов в гибридном контексте
 llm_graph_input_mem_hybrid * llm_graph_context::build_inp_mem_hybrid() const {
     const auto * mctx_cur = static_cast<const llama_memory_hybrid_context *>(mctx);
 
+    // Получаем базовые указатели и делаем динамическое приведение
     auto inp_rs   = build_rs_inp_impl(ctx0, ubatch, mctx_cur->get_recr());
     auto inp_attn = build_attn_inp_kv_impl(ctx0, ubatch, hparams, cparams, mctx_cur->get_attn());
+
+    // Проверяем что оба input создались успешно
+    if (!inp_rs || !inp_attn) {
+        return nullptr;
+    }
 
     auto inp = std::make_unique<llm_graph_input_mem_hybrid>(std::move(inp_attn), std::move(inp_rs), mctx_cur);
 
@@ -2050,7 +2011,6 @@ void llm_graph_context::build_dense_out(
     ggml_build_forward_expand(gf, cur);
 }
 
-
 void llm_graph_context::build_pooling(
         ggml_tensor * cls,
         ggml_tensor * cls_b,
@@ -2061,16 +2021,6 @@ void llm_graph_context::build_pooling(
     }
 
     ggml_tensor * inp = res->t_embd;
-
-    //// find result_norm tensor for input
-    //for (int i = ggml_graph_n_nodes(gf) - 1; i >= 0; --i) {
-    //    inp = ggml_graph_node(gf, i);
-    //    if (strcmp(inp->name, "result_norm") == 0 || strcmp(inp->name, "result_embd") == 0) {
-    //        break;
-    //    }
-
-    //    inp = nullptr;
-    //}
 
     GGML_ASSERT(inp != nullptr && "missing result_norm/result_embd tensor");
 
@@ -2097,8 +2047,6 @@ void llm_graph_context::build_pooling(
                 ggml_tensor * inp_cls = build_inp_cls();
                 cur = ggml_get_rows(ctx0, inp, inp_cls);
 
-                // classification head
-                // https://github.com/huggingface/transformers/blob/5af7d41e49bbfc8319f462eb45253dcb3863dfb7/src/transformers/models/roberta/modeling_roberta.py#L1566
                 if (cls) {
                     cur = ggml_mul_mat(ctx0, cls, cur);
                     if (cls_b) {
@@ -2107,10 +2055,6 @@ void llm_graph_context::build_pooling(
                     cur = ggml_tanh(ctx0, cur);
                 }
 
-                // some models don't have `cls_out`, for example: https://huggingface.co/jinaai/jina-reranker-v1-tiny-en
-                // https://huggingface.co/jinaai/jina-reranker-v1-tiny-en/blob/cb5347e43979c3084a890e3f99491952603ae1b7/modeling_bert.py#L884-L896
-                // Single layer classification head (direct projection)
-                // https://github.com/huggingface/transformers/blob/f4fc42216cd56ab6b68270bf80d811614d8d59e4/src/transformers/models/bert/modeling_bert.py#L1476
                 if (cls_out) {
                     cur = ggml_mul_mat(ctx0, cls_out, cur);
                     if (cls_out_b) {
@@ -2118,7 +2062,6 @@ void llm_graph_context::build_pooling(
                     }
                 }
 
-                // softmax for qwen3 reranker
                 if (arch == LLM_ARCH_QWEN3) {
                     cur = ggml_soft_max(ctx0, cur);
                 }
@@ -2136,7 +2079,6 @@ void llm_graph_context::build_pooling(
 }
 
 int32_t llama_relative_position_bucket(llama_pos x, llama_pos y, uint64_t n_buckets, bool bidirectional) {
-    // TODO move to hparams if a T5 variant appears that uses a different value
     const int64_t max_distance = 128;
 
     if (bidirectional) {
@@ -2176,7 +2118,7 @@ static std::vector<float> aggregate_attention_scores(
     
     for (const auto& scores : layer_scores) {
         if (scores.size() != n_kv * n_tokens) {
-            continue; // Пропускаем некорректные размеры
+            continue;
         }
         
         for (size_t i = 0; i < scores.size(); ++i) {
@@ -2194,7 +2136,6 @@ static std::vector<float> aggregate_attention_scores(
     return aggregated;
 }
 
-// Функция для вычисления reverse attention importance
 static std::vector<float> calculate_reverse_attention_importance(
     const std::vector<float>& attention_matrix,
     size_t n_kv,
@@ -2206,21 +2147,19 @@ static std::vector<float> calculate_reverse_attention_importance(
         return importance_scores;
     }
     
-    // Вычисляем обратное внимание: как часто каждый KV токен используется
     for (size_t kv_idx = 0; kv_idx < n_kv; ++kv_idx) {
         float total_score = 0.0f;
         int count = 0;
         
         for (size_t token_idx = 0; token_idx < n_tokens; ++token_idx) {
             float score = attention_matrix[token_idx * n_kv + kv_idx];
-            if (score > 0.01f) { // Игнорируем очень маленькие значения
+            if (score > 0.01f) {
                 total_score += score;
                 count++;
             }
         }
         
         if (count > 0) {
-            // Средний скор + частота использования
             importance_scores[kv_idx] = total_score / count * (1.0f + count / (float)n_tokens);
         }
     }

@@ -15991,7 +15991,6 @@ struct llm_build_rwkv7 : public llm_build_rwkv7_base {
         res->t_embd = cur;
 
         cur = build_lora_mm(model.output, cur);
-
         cb(cur, "result_output", -1);
         res->t_logits = cur;
 
@@ -19692,23 +19691,106 @@ llama_memory_i * llama_model::create_memory(const llama_memory_params & params, 
                         };
                     }
 
-                    res = new llama_memory_hybrid(
-                        /* model             */ *this,
-                        /* attn_type_k       */ params.type_k,
-                        /* attn_type_v       */ params.type_v,
-                        /* attn_v_trans      */ !cparams.flash_attn,
-                        /* attn_kv_size      */ cparams.n_ctx,
-                        /* attn_n_pad        */ 1,
-                        /* attn_n_swa        */ hparams.n_swa,
-                        /* attn_swa_type     */ hparams.swa_type,
-                        /* recurrent_type_k  */ GGML_TYPE_F32,
-                        /* recurrent_type_v  */ GGML_TYPE_F32,
-                        /* recurrent_kv_size */ std::max((uint32_t) 1, cparams.n_seq_max),
-                        /* n_seq_max         */ cparams.n_seq_max,
-                        /* offload           */ cparams.offload_kqv,
-                        /* unified           */ cparams.kv_unified,
-                        /* filter_attn       */ std::move(filter_attn),
-                        /* filter_recr       */ std::move(filter_recr));
+                    // Create attention component
+	
+                    std::unique_ptr<llama_memory_i> attn;
+                    // Check if we need SWA (Sliding Window Attention) cache
+                    if (hparams.n_swa > 0) {
+                        // Create KV cache with SWA support
+                        attn = std::make_unique<llama_kv_cache_iswa>(
+                            /* model        */ *this,
+                            /* type_k       */ params.type_k,
+                            /* type_v       */ params.type_v,
+                            /* v_trans      */ !cparams.flash_attn,
+                            /* offload      */ cparams.offload_kqv,
+                            /* swa_full     */ false,
+                            /* unified      */ cparams.kv_unified,
+                            /* kv_size      */ cparams.n_ctx,
+                            /* n_seq_max    */ cparams.n_seq_max,
+                            /* n_ubatch     */ 1,
+                            /* n_pad        */ 1,
+                            /* filter       */ std::move(filter_attn),
+                            /* reuse        */ nullptr);
+                    } else {
+                        // Create regular KV cache
+                        attn = std::make_unique<llama_kv_cache>(
+                            /* model        */ *this,
+                            /* type_k       */ params.type_k,
+                            /* type_v       */ params.type_v,
+                            /* v_trans      */ !cparams.flash_attn,
+                            /* offload      */ cparams.offload_kqv,
+                            /* unified      */ cparams.kv_unified,
+                            /* kv_size      */ cparams.n_ctx,
+                            /* n_seq_max    */ cparams.n_seq_max,
+                            /* n_pad        */ 1,
+                            /* n_swa        */ 0,
+                            /* swa_type     */ LLAMA_SWA_TYPE_NONE,
+                            /* filter       */ std::move(filter_attn),
+                            /* reuse        */ nullptr);
+                    }
+                    
+                    // Create recurrent component
+                    std::unique_ptr<llama_memory_i> recr = std::make_unique<llama_memory_recurrent>(
+						/* model        */ *this,
+						/* type_k       */ GGML_TYPE_F32,
+						/* type_v       */ GGML_TYPE_F32,
+						/* v_trans      */ false,  // <-- ADD THIS MISSING PARAMETER
+						/* kv_size      */ std::max((uint32_t) 1, cparams.n_seq_max),
+						/* n_seq_max    */ cparams.n_seq_max,
+						/* filter       */ std::move(filter_recr));
+										
+                    // Create hybrid memory
+                    res = new llama_memory_hybrid(std::move(attn), std::move(recr));
+
+                    // Create attention component
+                    
+                    // Check if we need SWA (Sliding Window Attention) cache
+                    if (hparams.n_swa > 0) {
+                        // Create KV cache with SWA support
+                        attn = std::make_unique<llama_kv_cache_iswa>(
+                            /* model        */ *this,
+                            /* type_k       */ params.type_k,
+                            /* type_v       */ params.type_v,
+                            /* v_trans      */ !cparams.flash_attn,
+                            /* offload      */ cparams.offload_kqv,
+                            /* swa_full     */ false,
+                            /* unified      */ cparams.kv_unified,
+                            /* kv_size      */ cparams.n_ctx,
+                            /* n_seq_max    */ cparams.n_seq_max,
+                            /* n_ubatch     */ 1,
+                            /* n_pad        */ 1,
+                            /* filter       */ std::move(filter_attn),
+                            /* reuse        */ nullptr);
+                    } else {
+                        // Create regular KV cache
+                        attn = std::make_unique<llama_kv_cache>(
+                            /* model        */ *this,
+                            /* type_k       */ params.type_k,
+                            /* type_v       */ params.type_v,
+                            /* v_trans      */ !cparams.flash_attn,
+                            /* offload      */ cparams.offload_kqv,
+                            /* unified      */ cparams.kv_unified,
+                            /* kv_size      */ cparams.n_ctx,
+                            /* n_seq_max    */ cparams.n_seq_max,
+                            /* n_pad        */ 1,
+                            /* n_swa        */ 0,
+                            /* swa_type     */ LLAMA_SWA_TYPE_NONE,
+                            /* filter       */ std::move(filter_attn),
+                            /* reuse        */ nullptr);
+                    }
+                    
+                    // Create recurrent component
+                    recr = std::make_unique<llama_memory_recurrent>(
+                        /* model        */ *this,
+                        /* type_k       */ GGML_TYPE_F32,
+                        /* type_v       */ GGML_TYPE_F32,
+                        /* v_trans      */ false,
+                        /* kv_size      */ std::max((uint32_t) 1, cparams.n_seq_max),
+                        /* n_seq_max    */ cparams.n_seq_max,
+                        /* filter       */ std::move(filter_recr));
+                    
+                    // Create hybrid memory
+                    res = new llama_memory_hybrid(std::move(attn), std::move(recr));
                 } else {
                     uint32_t n_ctx_per_stream = cparams.n_ctx;
 

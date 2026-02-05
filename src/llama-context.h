@@ -217,32 +217,23 @@ private:
     // Declare friend functions
     friend void llama_kv_cache_compact(struct llama_context * ctx);
     friend void llama_kv_cache_trim_random(struct llama_context * ctx, int trim_percentage);
-    friend void llama_kv_cache_trim_reverse_attention(
-        struct llama_context * ctx,
-        int trim_percentage,
-        float min_attention_threshold,
-        bool preserve_system_prompt);
-    friend void llama_kv_cache_trim_reverse_attention_ex(
-        struct llama_context * ctx,
-        const llama_reverse_attention_params * params);
-    friend void llama_set_attention_callback(
-        struct llama_context * ctx,
-        llama_attention_callback callback,
-        void * user_data);
-    friend void llama_enable_attention_tracking(
-        struct llama_context * ctx,
-        bool enabled);
-    friend bool llama_is_attention_tracking_enabled(
-        const struct llama_context * ctx);
-    friend llama_attention_stats llama_get_attention_statistics(
-        const struct llama_context * ctx);
-    friend void llama_internal_attention_callback(
-        const llama_context * ctx,
-        int layer,
-        const float * attention_scores,
-        size_t n_kv,
-        size_t n_tokens);
+    
+    // ДОБАВЬТЕ ВСЕ ЭТИ ФУНКЦИИ:
+    friend void llama_kv_cache_trim_reverse_attention(struct llama_context * ctx, int trim_percentage);
+    friend void llama_kv_cache_trim_reverse_attention_ex(struct llama_context * ctx, const llama_reverse_attention_params * params);
+    friend void llama_kv_cache_trim_reverse_attention_params(struct llama_context * ctx, int trim_percentage, float min_attention_threshold, bool preserve_system_prompt);
+    
+    friend void llama_set_attention_callback(struct llama_context * ctx, llama_attention_callback callback, void * user_data);
+    friend void llama_enable_attention_tracking(struct llama_context * ctx, bool enabled);
+    friend bool llama_is_attention_tracking_enabled(const struct llama_context * ctx);
+    friend llama_attention_stats llama_get_attention_statistics(const struct llama_context * ctx);
+    
+    // ДОБАВЬТЕ ЭТУ:
+    friend void llama_clear_attention_scores(struct llama_context * ctx);
+    
+    friend void llama_internal_attention_callback(const llama_context * ctx, int layer, const float * attention_scores, size_t n_kv, size_t n_tokens);
     friend void llama_internal_cleanup_attention_callbacks(const llama_context * ctx);
+    friend void llama_graph_attention_callback(const llama_context * ctx, int layer, const float * attention_scores, size_t n_kv, size_t n_tokens);
 
     // output
     //

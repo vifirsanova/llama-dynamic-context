@@ -1,10 +1,8 @@
 #pragma once
 
-#include "llama-batch.h"
-#include "llama-graph.h"
 #include "llama-kv-cache.h"
-#include "llama-memory.h"
 #include "llama-memory-recurrent.h"
+#include "llama-memory.h"
 
 #include <memory>
 #include <vector>
@@ -13,34 +11,16 @@
 // llama_memory_hybrid
 //
 
-// utilizes instances of llama_memory_recurrent and llama_kv_cache to
-//   support models where each layer may be either attention-based or recurrent
+// utilizes two instances of llama_memory_i
+//   the first instance is for the attention layers of the model and the second instance is for the recurrent layers
 
 class llama_memory_hybrid : public llama_memory_i {
 public:
     llama_memory_hybrid(
-        const llama_model & model,
-                            /* attn */
-                ggml_type   type_k,
-                ggml_type   type_v,
-                     bool   v_trans,
-                 uint32_t   kv_size,
-                 uint32_t   n_pad,
-                 uint32_t   n_swa,
-           llama_swa_type   swa_type,
-                            /* recurrent */
-                ggml_type   type_r,
-                ggml_type   type_s,
-                 uint32_t   rs_size,
-                            /* common */
-                 uint32_t   n_seq_max,
-                     bool   offload,
-                     bool   unified,
-                            /* layer filters */
-    const layer_filter_cb & filter_attn = nullptr,
-    const layer_filter_cb & filter_recr = nullptr);
+            std::unique_ptr<llama_memory_i> attn,
+            std::unique_ptr<llama_memory_i> recr);
 
-    ~llama_memory_hybrid() = default;
+    ~llama_memory_hybrid() override;
 
     //
     // llama_memory_i
@@ -56,6 +36,14 @@ public:
     llama_memory_context_ptr init_update(llama_context * lctx, bool optimize) override;
 
     bool get_can_shift() const override;
+    uint32_t get_size() const override;
+    uint32_t get_n_seq_max() const override;
+    
+    // Access to internal components
+    llama_memory_i * get_attn() const override;
+    llama_memory_i * get_recr() const override;
+    llama_kv_cache * get_kv_cache() const override;
+    llama_memory_recurrent * get_recurrent() const override;
 
     void clear(bool data) override;
 
@@ -70,61 +58,112 @@ public:
 
     std::map<ggml_backend_buffer_type_t, size_t> memory_breakdown() const override;
 
+    // Debug and stats
+    uint32_t get_used_cells() const override;
+    uint32_t get_non_empty_cell_count() const override;
+    void debug_cell_states() const override;
+    llama_pos get_current_max_position() const override;
+    
+    // Reverse attention and trimming
+    void trim_random(int trim_percentage, const std::map<llama_pos, std::string>* token_mapping = nullptr) override;
+    void trim_reverse_attention_simple(int trim_percentage) override;
+    bool compact() override;
+    
+    // Attention tracking
+    void enable_attention_tracking(bool enabled) override;
+    bool is_attention_tracking_enabled() const override;
+    void set_attention_callback(
+        llama_attention_callback callback,
+        void* user_data) override;
+    void clear_attention_scores() override;
+    void register_attention_scores(
+        int layer,
+        const std::vector<float>& attention_matrix,
+        size_t n_kv,
+        size_t n_tokens) override;
+
     // state write/load
 
     void state_write(llama_io_write_i & io, llama_seq_id seq_id = -1, llama_state_seq_flags flags = 0) const override;
-    void state_read (llama_io_read_i  & io, llama_seq_id seq_id = -1, llama_state_seq_flags flags = 0)       override;
-
-    //
-    // llama_memory_hybrid specific API
-    //
-
-    llama_kv_cache * get_mem_attn() const;
-    llama_memory_recurrent * get_mem_recr() const;
+    void state_read (llama_io_read_i  & io, llama_seq_id seq_id = -1, llama_state_seq_flags flags = 0) override;
 
 private:
-    const llama_hparams & hparams;
-
-    const std::unique_ptr<llama_kv_cache> mem_attn;
-    const std::unique_ptr<llama_memory_recurrent> mem_recr;
+    std::unique_ptr<llama_memory_i> attn;
+    std::unique_ptr<llama_memory_i> recr;
 };
 
 class llama_memory_hybrid_context : public llama_memory_context_i {
 public:
-    using slot_info_vec_t = llama_kv_cache::slot_info_vec_t;
-
-    // init failure
+    // used for errors
     explicit llama_memory_hybrid_context(llama_memory_status status);
 
-    // init full
+    // used to create a full-cache context
     explicit llama_memory_hybrid_context(llama_memory_hybrid * mem);
 
-    // init update
-    explicit llama_memory_hybrid_context(
-        llama_memory_hybrid * mem,
-              llama_context * lctx,
-                       bool   optimize);
-
-    // init success
+    // used to create a batch processing context from a batch
     llama_memory_hybrid_context(
-              llama_memory_hybrid * mem,
-                  slot_info_vec_t   sinfos_attn,
-        std::vector<llama_ubatch>   ubatches);
+            llama_memory_context_ptr ctx_attn,
+            llama_memory_context_ptr ctx_recr,
+            std::vector<llama_ubatch> ubatches);
 
-    ~llama_memory_hybrid_context() = default;
+    ~llama_memory_hybrid_context() override;
 
-    bool next()  override;
+    //
+    // llama_memory_context_i
+    //
+
+    bool next() override;
     bool apply() override;
 
     llama_memory_status  get_status() const override;
     const llama_ubatch & get_ubatch() const override;
+    const llama_context* get_context() const override;
+    
+    // Common methods
+    uint32_t get_head() const override;
+    uint32_t get_size() const override;
+    uint32_t get_n_kv() const override;
+    uint32_t get_n_rs() const override;
+    int32_t get_rs_z() const override;
+    uint32_t get_used_cells() const override;
+    uint32_t get_total_cells() const override;
+    llama_pos get_max_position() const override;
+    
+    // Tensor access methods
+    ggml_tensor * get_k(ggml_context * ctx, int32_t il) const override;
+    ggml_tensor * get_v(ggml_context * ctx, int32_t il) const override;
+    ggml_tensor * get_r_l(int32_t il) const override;
+    ggml_tensor * get_s_l(int32_t il) const override;
+    
+    // Copy operations
+    ggml_tensor * cpy_k(ggml_context * ctx, ggml_tensor * k_cur, ggml_tensor * k_idxs, int32_t il) const override;
+    ggml_tensor * cpy_v(ggml_context * ctx, ggml_tensor * v_cur, ggml_tensor * v_idxs, int32_t il) const override;
+    
+    // Input setup
+    ggml_tensor * build_input_k_idxs(ggml_context * ctx, const llama_ubatch & ubatch) const override;
+    ggml_tensor * build_input_v_idxs(ggml_context * ctx, const llama_ubatch & ubatch) const override;
+    
+    void set_input_k_idxs(ggml_tensor * dst, const llama_ubatch * ubatch) const override;
+    void set_input_v_idxs(ggml_tensor * dst, const llama_ubatch * ubatch) const override;
+    void set_input_k_shift(ggml_tensor * dst) const override;
+    void set_input_kq_mask(ggml_tensor * dst, const llama_ubatch * ubatch, bool causal_attn) const override;
+    void set_input_pos_bucket(ggml_tensor * dst, const llama_ubatch * ubatch) const override;
+    
+    // Type conversion
+    const llama_kv_cache_context * as_kv_cache() const override;
+    const llama_kv_cache_iswa_context * as_kv_cache_iswa() const override;
+    const llama_memory_recurrent_context * as_recurrent() const override;
+    const llama_memory_hybrid_context * as_hybrid() const override;
+    
+    // Helper methods
+    int32_t s_copy(int i) const override;
 
     //
-    // llama_memory_hybrid_context
+    // llama_memory_hybrid_context specific API
     //
 
-    const llama_kv_cache_context * get_attn() const;
-    const llama_memory_recurrent_context * get_recr() const;
+    const llama_memory_context_i * get_attn() const;
+    const llama_memory_context_i * get_recr() const;
 
 private:
     // the index of the next ubatch to process
@@ -132,8 +171,8 @@ private:
 
     std::vector<llama_ubatch> ubatches;
 
-    const llama_memory_context_ptr ctx_attn;
-    const llama_memory_context_ptr ctx_recr;
+    llama_memory_context_ptr ctx_attn;
+    llama_memory_context_ptr ctx_recr;
 
-    const llama_memory_status status;
+    llama_memory_status status;
 };

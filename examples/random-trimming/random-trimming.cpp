@@ -458,6 +458,29 @@ int main(int argc, char ** argv) {
 
         // Perform trimming in main process
         llama_kv_cache_trim_random(ctx, trim_pct);
+		// random-trimming.cpp - пример использования reverse attention
+
+		// В main функции, после random trim можно добавить:
+		fprintf(stderr, "\n=== Testing Reverse Attention Trimming ===\n");
+
+		// Включить трекинг attention
+
+		// Сгенерировать немного текста чтобы накопить attention scores
+
+		// Выполнить reverse attention trim
+		fprintf(stderr, "Applying reverse-attention trim...\n");
+		llama_reverse_attention_params params = llama_reverse_attention_default_params();
+		params.trim_threshold = 0.25f; // Use trim_percentage from your code
+		params.min_attention_score = 0.1f;
+		llama_kv_cache_trim_reverse_attention_ex(ctx, &params);
+
+		// Компактировать
+		llama_kv_cache_compact(ctx);
+
+		// Simple debug output instead of statistics
+		fprintf(stderr, "Reverse attention trim completed\n");
+		// Debug the current state
+		debug_kv_cache_state(ctx, "AFTER_REVERSE_ATTENTION");
 
         // Restore stderr
         fflush(stderr);

@@ -324,3 +324,33 @@ const llama_kv_cache_context * llama_kv_cache_iswa_context::get_swa()  const {
 
     return static_cast<const llama_kv_cache_context *>(ctx_swa.get());
 }
+
+// В llama-kv-cache-iswa.cpp
+const llama_context* llama_kv_cache_iswa_context::get_context() const {
+    // Try to get context from base cache first
+    if (ctx_base) {
+        const llama_context* ctx = ctx_base->get_context();
+        if (ctx) {
+            return ctx;
+        }
+    }
+    
+    // Fall back to swa cache
+    if (ctx_swa) {
+        return ctx_swa->get_context();
+    }
+    
+    // No context available
+    return nullptr;
+}
+
+uint32_t llama_kv_cache_iswa::get_size() const {
+    // Return the size of the base cache since it's the main cache
+    // Alternatively, you could return the combined size if needed
+    return kv_base->get_size();
+}
+
+uint32_t llama_kv_cache_iswa::get_n_seq_max() const {
+    // Return the maximum number of sequences
+    return kv_base->get_n_seq_max();
+}

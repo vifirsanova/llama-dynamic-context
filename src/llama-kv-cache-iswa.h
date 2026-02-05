@@ -10,7 +10,6 @@
 
 // utilizes two instances of llama_kv_cache
 //   the first instance is for the non-SWA layers of the model and the second instance is for the SWA layers
-
 class llama_kv_cache_iswa : public llama_memory_i {
 public:
     llama_kv_cache_iswa(
@@ -29,6 +28,10 @@ public:
         const  layer_reuse_cb & reuse);
 
     ~llama_kv_cache_iswa() = default;
+
+    // Add these two methods
+    uint32_t get_size() const override;
+    uint32_t get_n_seq_max() const override;
 
     //
     // llama_memory_i
@@ -114,6 +117,9 @@ public:
 
     llama_memory_status  get_status() const override;
     const llama_ubatch & get_ubatch() const override;
+
+    // NEW: Method for reverse attention support
+    const llama_context* get_context() const override;
 
     //
     // llama_kv_cache_iswa_context specific API
