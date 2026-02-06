@@ -75,7 +75,19 @@ private:
 	LLAMA_LOG_INFO("extract_attention_scores: Layer %d, Tensor shape: %zux%zu, elements: %zu\n",
                    layer, n_kv, n_tokens, ggml_nelements(attention_tensor));
 
-        if (n_kv == 0 || n_tokens == 0) {
+	// ПРОСТАЯ ПРОВЕРКА: есть ли буфер?
+	LLAMA_LOG_INFO("extract_attention_scores: Tensor buffer: %p\n",
+		   (void*)attention_tensor->buffer);
+       
+	if (attention_tensor->buffer) {
+            // Используем только существующие функции
+	    LLAMA_LOG_INFO("extract_attention_scores: Buffer exists\n");
+	} else {
+		LLAMA_LOG_INFO("extract_attention_scores: NO BUFFER - tensor not allocated!\n");
+		return; // Если нет буфера, данные недоступны
+		}
+        
+	if (n_kv == 0 || n_tokens == 0) {
 	    LLAMA_LOG_INFO("extract_attention_scores: zero dimensions\n");
             return;
         }
@@ -87,6 +99,39 @@ private:
         ggml_backend_tensor_get(attention_tensor, attention_scores.data(), 0,
                                attention_scores.size() * sizeof(float));
         
+	   // Пробуем получить данные
+    	try {
+		ggml_backend_tensor_get(attention_tensor, attention_scores.data(), 0,
+				attention_scores.size() * sizeof(float));
+		LLAMA_LOG_INFO("extract_attention_scores: Data retrieved successfully\n");
+	} catch (...) {
+		LLAMA_LOG_INFO("extract_attention_scores: FAILED to get data\n");
+		return;
+	}
+
+	// Простая проверка первых значений
+	int zero_count = 0;
+	int inf_count = 0;
+	int nan_count = 0;
+
+	for (size_t i = 0; i < std::min((size_t)100, attention_scores.size()); ++i) {
+		float val = attention_scores[i];
+		if (val == 0.0f) zero_count++;
+		if (std::isinf(val)) inf_count++;
+		if (std::isnan(val)) nan_count++;
+	}
+
+        LLAMA_LOG_INFO("extract_attention_scores: Stats (first 100): zeros=%d, inf=%d, nan=%d\n",
+			zero_count, inf_count, nan_count);
+
+        // Выводим несколько первых значений
+        if (attention_scores.size() > 0) {
+            LLAMA_LOG_INFO("extract_attention_scores: First 3 values: [0]=%.6f, [1]=%.6f, [2]=%.6f\n",
+			    attention_scores[0],
+                            attention_scores.size() > 1 ? attention_scores[1] : 0.0f,
+                            attention_scores.size() > 2 ? attention_scores[2] : 0.0f);
+	}
+
         if (reverse_attention_debug) {
             // Найти min/max/avg scores
             float min_score = std::numeric_limits<float>::max();
@@ -1500,7 +1545,17 @@ ggml_tensor * llm_graph_context::build_attn_mha(
             LLAMA_LOG_INFO("Layer %d: Flash attention - attention scores not available\n", il);
         }
     } else {
-        ggml_tensor * kq = ggml_mul_mat(ctx0, k, q);
+	LLAMA_LOG_INFO("build_attn_mha[%d]: Creating kq = k * q (no flash)\n", il);
+        
+	ggml_tensor * kq = ggml_mul_mat(ctx0, k, q);
+	
+	if (!kq) {
+            LLAMA_LOG_ERROR("build_attn_mha[%d]: kq is NULL!\n", il);
+        } else {
+            LLAMA_LOG_INFO("build_attn_mha[%d]: kq created, shape=[%d,%d]\n",
+                          il, (int)kq->ne[0], (int)kq->ne[1]);
+        }
+
         cb(kq, "kq", il);
 
         ggml_mul_mat_set_prec(kq, GGML_PREC_F32);
@@ -1526,6 +1581,10 @@ ggml_tensor * llm_graph_context::build_attn_mha(
             cb(kq, "kq_plus_kq_b", il);
         }
         
+	LLAMA_LOG_INFO("build_attn_mha[%d]: Saving attention tensor pointer\n", il);
+        
+
+
         // НОВОЕ: Сохраняем attention scores ДО softmax для reverse attention
         auto attention_input = std::make_unique<llm_graph_input_attention_scores>(
             static_cast<const llama_context*>(mctx->get_context()), il);
