@@ -64,6 +64,7 @@ public:
 private:
     void extract_attention_scores() {
         if (!attention_tensor || ggml_nelements(attention_tensor) == 0) {
+	    LLAMA_LOG_INFO("extract_attention_scores: no attention tensor\n");
             return;
         }
         
@@ -71,7 +72,11 @@ private:
         size_t n_kv = attention_tensor->ne[0];
         size_t n_tokens = attention_tensor->ne[1];
         
+	LLAMA_LOG_INFO("extract_attention_scores: Layer %d, Tensor shape: %zux%zu, elements: %zu\n",
+                   layer, n_kv, n_tokens, ggml_nelements(attention_tensor));
+
         if (n_kv == 0 || n_tokens == 0) {
+	    LLAMA_LOG_INFO("extract_attention_scores: zero dimensions\n");
             return;
         }
         

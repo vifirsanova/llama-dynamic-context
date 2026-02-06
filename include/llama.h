@@ -490,6 +490,7 @@ extern "C" {
 
     DEPRECATED(LLAMA_API void llama_free_model(struct llama_model * model),
             "use llama_model_free instead");
+    LLAMA_API void llama_enable_internal_attention_tracking(struct llama_context * ctx, bool enabled);
 
     LLAMA_API void llama_model_free(struct llama_model * model);
 
@@ -758,10 +759,7 @@ extern "C" {
 
 	LLAMA_API void llama_kv_cache_trim_reverse_attention(
 		struct llama_context * ctx,
-		int trim_percentage,
-		float min_attention_threshold,  // Минимальный порог внимания для сохранения
-		bool preserve_system_prompt     // Сохранять системный промпт
-	);
+		int trim_percentage);
     //
     // State / sessions
     //

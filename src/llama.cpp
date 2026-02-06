@@ -27,6 +27,10 @@
 #pragma warning(disable: 4244 4267) // possible loss of data
 #endif
 
+// Internal callback storage - DECLARED AT TOP LEVEL
+static std::map<const llama_context*, std::pair<llama_attention_callback, void*>> g_attention_callbacks;
+static std::map<const llama_context*, bool> g_attention_tracking_enabled_internal;
+
 //
 // interface implementation
 //
@@ -605,6 +609,8 @@ LLAMA_API void llama_enable_attention_tracking(
     struct llama_context * ctx,
     bool enabled) {
     
+    LLAMA_LOG_DEBUG("%s: called for context %p, enabled=%d\n", __func__, (void*)ctx, enabled);
+    
     if (ctx == nullptr) {
         LLAMA_LOG_ERROR("%s: context is null\n", __func__);
         return;
@@ -624,6 +630,8 @@ LLAMA_API void llama_enable_attention_tracking(
     
     try {
         kv_cache->enable_attention_tracking(enabled);
+        g_attention_tracking_enabled_internal[ctx] = enabled;
+        
         LLAMA_LOG_INFO("%s: attention tracking %s for context %p\n", 
                       __func__, enabled ? "enabled" : "disabled", (void*)ctx);
         
@@ -635,6 +643,8 @@ LLAMA_API void llama_enable_attention_tracking(
 // Проверить включен ли трекинг attention
 LLAMA_API bool llama_is_attention_tracking_enabled(
     const struct llama_context * ctx) {
+    
+    LLAMA_LOG_DEBUG("%s: called for context %p\n", __func__, (void*)ctx);
     
     if (ctx == nullptr) {
         LLAMA_LOG_ERROR("%s: context is null\n", __func__);
@@ -663,9 +673,10 @@ LLAMA_API bool llama_is_attention_tracking_enabled(
 }
 
 // Получить статистику attention
-// В llama.cpp, исправьте функцию llama_get_attention_statistics:
 LLAMA_API llama_attention_stats llama_get_attention_statistics(
     const struct llama_context * ctx) {
+    
+    LLAMA_LOG_DEBUG("%s: called for context %p\n", __func__, (void*)ctx);
     
     llama_attention_stats stats{};
     
@@ -698,9 +709,6 @@ LLAMA_API llama_attention_stats llama_get_attention_statistics(
         stats.tokens_kept = internal_stats.total_tokens;
         stats.memory_reduction = 0.0f; // Нужно трекать отдельно
         
-        // Если нужны дополнительные поля, добавьте их в структуру в llama.h
-        // или используйте другие доступные поля
-        
         LLAMA_LOG_DEBUG("%s: retrieved attention statistics for context %p\n", 
                        __func__, (void*)ctx);
         
@@ -710,11 +718,15 @@ LLAMA_API llama_attention_stats llama_get_attention_statistics(
     
     return stats;
 }
+
 // Set attention callback
 LLAMA_API void llama_set_attention_callback(
     struct llama_context * ctx,
     llama_attention_callback callback,
     void * user_data) {
+    
+    LLAMA_LOG_DEBUG("%s: called for context %p, callback=%p\n", 
+                   __func__, (void*)ctx, (void*)callback);
     
     if (ctx == nullptr) {
         LLAMA_LOG_ERROR("%s: context is null\n", __func__);
@@ -734,15 +746,21 @@ LLAMA_API void llama_set_attention_callback(
     }
     
     try {
-        kv_cache->set_attention_callback(callback, user_data);
-        
+        // Store the callback in our internal map
         if (callback == nullptr) {
+            g_attention_callbacks.erase(ctx);
             LLAMA_LOG_INFO("%s: removed attention callback for context %p\n", 
                           __func__, (void*)ctx);
         } else {
+            g_attention_callbacks[ctx] = {callback, user_data};
+            // Enable attention tracking when callback is set
+            llama_enable_attention_tracking(ctx, true);
             LLAMA_LOG_INFO("%s: set attention callback for context %p\n", 
                           __func__, (void*)ctx);
         }
+        
+        // Also set in KV cache for internal tracking
+        kv_cache->set_attention_callback(callback, user_data);
         
     } catch (const std::exception& e) {
         LLAMA_LOG_ERROR("%s: exception setting attention callback: %s\n", __func__, e.what());
@@ -752,6 +770,8 @@ LLAMA_API void llama_set_attention_callback(
 // Clear attention scores
 LLAMA_API void llama_clear_attention_scores(
     struct llama_context * ctx) {
+    
+    LLAMA_LOG_DEBUG("%s: called for context %p\n", __func__, (void*)ctx);
     
     if (ctx == nullptr) {
         LLAMA_LOG_ERROR("%s: context is null\n", __func__);
@@ -780,12 +800,6 @@ LLAMA_API void llama_clear_attention_scores(
     }
 }
 
-// Internal callback for graph computation
-static std::map<const llama_context*, std::pair<llama_attention_callback, void*>> g_attention_callbacks;
-
-// Internal tracking enabled flag
-static std::map<const llama_context*, bool> g_attention_tracking_enabled_internal;
-
 // Legacy function for backward compatibility
 LLAMA_API void llama_internal_attention_callback(
     const llama_context * ctx,
@@ -794,13 +808,18 @@ LLAMA_API void llama_internal_attention_callback(
     size_t n_kv,
     size_t n_tokens) {
     
+    LLAMA_LOG_DEBUG("%s: ENTER - ctx=%p, layer=%d, n_kv=%zu, n_tokens=%zu, scores=%p\n", 
+                   __func__, (void*)ctx, layer, n_kv, n_tokens, (void*)attention_scores);
+    
     if (ctx == nullptr || attention_scores == nullptr) {
+        LLAMA_LOG_DEBUG("%s: EXIT - null parameters\n", __func__);
         return;
     }
     
     // Check if tracking is enabled for this context
     auto tracking_it = g_attention_tracking_enabled_internal.find(ctx);
     if (tracking_it == g_attention_tracking_enabled_internal.end() || !tracking_it->second) {
+        LLAMA_LOG_DEBUG("%s: EXIT - tracking disabled for context %p\n", __func__, (void*)ctx);
         return;
     }
     
@@ -808,7 +827,11 @@ LLAMA_API void llama_internal_attention_callback(
     auto callback_it = g_attention_callbacks.find(ctx);
     if (callback_it != g_attention_callbacks.end()) {
         const auto& [callback, user_data] = callback_it->second;
+        LLAMA_LOG_DEBUG("%s: Found callback %p, calling it...\n", __func__, (void*)callback);
         callback(user_data, layer, attention_scores, n_kv, n_tokens);
+        LLAMA_LOG_DEBUG("%s: Callback executed successfully\n", __func__);
+    } else {
+        LLAMA_LOG_DEBUG("%s: No callback found for context %p\n", __func__, (void*)ctx);
     }
     
     // Pass to KV cache for internal tracking
@@ -816,14 +839,24 @@ LLAMA_API void llama_internal_attention_callback(
     if (memory != nullptr) {
         auto* kv_cache = dynamic_cast<llama_kv_cache*>(memory);
         if (kv_cache != nullptr && kv_cache->is_attention_tracking_enabled()) {
+            LLAMA_LOG_DEBUG("%s: Registering attention scores in KV cache...\n", __func__);
             std::vector<float> attention_matrix(attention_scores, attention_scores + n_kv * n_tokens);
             kv_cache->register_attention_scores(layer, attention_matrix, n_kv, n_tokens);
+            LLAMA_LOG_DEBUG("%s: Attention scores registered in KV cache\n", __func__);
+        } else {
+            LLAMA_LOG_DEBUG("%s: KV cache tracking disabled or not available\n", __func__);
         }
+    } else {
+        LLAMA_LOG_DEBUG("%s: No memory interface available\n", __func__);
     }
+    
+    LLAMA_LOG_DEBUG("%s: EXIT - completed successfully\n", __func__);
 }
 
 // Clean up callbacks when context is freed
 LLAMA_API void llama_internal_cleanup_attention_callbacks(const llama_context * ctx) {
+    LLAMA_LOG_DEBUG("%s: called for context %p\n", __func__, (void*)ctx);
+    
     if (ctx == nullptr) {
         return;
     }
@@ -831,7 +864,7 @@ LLAMA_API void llama_internal_cleanup_attention_callbacks(const llama_context * 
     g_attention_callbacks.erase(ctx);
     g_attention_tracking_enabled_internal.erase(ctx);
     
-    LLAMA_LOG_DEBUG("%s: cleaned up attention callbacks for context %p\n", 
+    LLAMA_LOG_INFO("%s: cleaned up attention callbacks for context %p\n", 
                    __func__, (void*)ctx);
 }
 
@@ -842,6 +875,9 @@ LLAMA_API void llama_graph_attention_callback(
     const float * attention_scores,
     size_t n_kv,
     size_t n_tokens) {
+    
+    LLAMA_LOG_INFO("%s: CALLED FROM LLAMA-GRAPH - ctx=%p, layer=%d, n_kv=%zu, n_tokens=%zu\n",
+                  __func__, (void*)ctx, layer, n_kv, n_tokens);
     
     llama_internal_attention_callback(ctx, layer, attention_scores, n_kv, n_tokens);
 }
