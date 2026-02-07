@@ -67,24 +67,26 @@ public:
     virtual int32_t get_rs_z() const { return -1; }
     
     // Tensor access methods (for recurrent and hybrid memory)
-    virtual ggml_tensor * get_k(ggml_context * ctx, int32_t il) const { return nullptr; }
-    virtual ggml_tensor * get_v(ggml_context * ctx, int32_t il) const { return nullptr; }
-    virtual ggml_tensor * get_r_l(int32_t il) const { return nullptr; }
-    virtual ggml_tensor * get_s_l(int32_t il) const { return nullptr; }
+    virtual ggml_tensor * get_k(ggml_context * /*ctx*/, int32_t /*il*/) const { return nullptr; }
+    virtual ggml_tensor * get_v(ggml_context * /*ctx*/, int32_t /*il*/) const { return nullptr; }
+    virtual ggml_tensor * get_r_l(int32_t /*il*/) const { return nullptr; }
+    virtual ggml_tensor * get_s_l(int32_t /*il*/) const { return nullptr; }
     
     // Copy operations
-    virtual ggml_tensor * cpy_k(ggml_context * ctx, ggml_tensor * k_cur, ggml_tensor * k_idxs, int32_t il) const { return nullptr; }
-    virtual ggml_tensor * cpy_v(ggml_context * ctx, ggml_tensor * v_cur, ggml_tensor * v_idxs, int32_t il) const { return nullptr; }
+    virtual ggml_tensor * cpy_k(ggml_context * /*ctx*/, ggml_tensor * /*k_cur*/, 
+                               ggml_tensor * /*k_idxs*/, int32_t /*il*/) const { return nullptr; }
+    virtual ggml_tensor * cpy_v(ggml_context * /*ctx*/, ggml_tensor * /*v_cur*/, 
+                               ggml_tensor * /*v_idxs*/, int32_t /*il*/) const { return nullptr; }
     
     // Input setup
-    virtual ggml_tensor * build_input_k_idxs(ggml_context * ctx, const llama_ubatch & ubatch) const { return nullptr; }
-    virtual ggml_tensor * build_input_v_idxs(ggml_context * ctx, const llama_ubatch & ubatch) const { return nullptr; }
+    virtual ggml_tensor * build_input_k_idxs(ggml_context * /*ctx*/, const llama_ubatch & /*ubatch*/) const { return nullptr; }
+    virtual ggml_tensor * build_input_v_idxs(ggml_context * /*ctx*/, const llama_ubatch & /*ubatch*/) const { return nullptr; }
     
-    virtual void set_input_k_idxs(ggml_tensor * dst, const llama_ubatch * ubatch) const {}
-    virtual void set_input_v_idxs(ggml_tensor * dst, const llama_ubatch * ubatch) const {}
-    virtual void set_input_k_shift(ggml_tensor * dst) const {}
-    virtual void set_input_kq_mask(ggml_tensor * dst, const llama_ubatch * ubatch, bool causal_attn) const {}
-    virtual void set_input_pos_bucket(ggml_tensor * dst, const llama_ubatch * ubatch) const {}
+    virtual void set_input_k_idxs(ggml_tensor * /*dst*/, const llama_ubatch * /*ubatch*/) const {}
+    virtual void set_input_v_idxs(ggml_tensor * /*dst*/, const llama_ubatch * /*ubatch*/) const {}
+    virtual void set_input_k_shift(ggml_tensor * /*dst*/) const {}
+    virtual void set_input_kq_mask(ggml_tensor * /*dst*/, const llama_ubatch * /*ubatch*/, bool /*causal_attn*/) const {}
+    virtual void set_input_pos_bucket(ggml_tensor * /*dst*/, const llama_ubatch * /*ubatch*/) const {}
     
     // Specialized accessors (return nullptr if not applicable)
     virtual const llama_kv_cache_context * as_kv_cache() const { return nullptr; }
@@ -93,7 +95,7 @@ public:
     virtual const llama_memory_hybrid_context * as_hybrid() const { return nullptr; }
     
     // Helper methods for graph building
-    virtual int32_t s_copy(int i) const { return -1; }
+    virtual int32_t s_copy(int /*i*/) const { return -1; }
     
     // Additional state info
     virtual uint32_t get_used_cells() const { return 0; }
@@ -160,22 +162,22 @@ public:
     virtual llama_pos get_current_max_position() const { return 0; }
     
     // Reverse attention and trimming
-    virtual void trim_random(int trim_percentage, const std::map<llama_pos, std::string>* token_mapping = nullptr) {}
-    virtual void trim_reverse_attention_simple(int trim_percentage) {}
+    virtual void trim_random(int /*trim_percentage*/, const std::map<llama_pos, std::string>* /*token_mapping*/ = nullptr) {}
+    virtual void trim_reverse_attention_simple(int /*trim_percentage*/) {}
     virtual bool compact() { return false; }
     
     // Attention tracking
-    virtual void enable_attention_tracking(bool enabled) {}
+    virtual void enable_attention_tracking(bool /*enabled*/) {}
     virtual bool is_attention_tracking_enabled() const { return false; }
     virtual void set_attention_callback(
-        llama_attention_callback callback,
-        void* user_data) {}
+        llama_attention_callback /*callback*/,
+        void* /*user_data*/) {}
     virtual void clear_attention_scores() {}
     virtual void register_attention_scores(
-        int layer,
-        const std::vector<float>& attention_matrix,
-        size_t n_kv,
-        size_t n_tokens) {}
+        int /*layer*/,
+        const std::vector<float>& /*attention_matrix*/,
+        size_t /*n_kv*/,
+        size_t /*n_tokens*/) {}
 
     // State persistence
     virtual void state_write(llama_io_write_i & io, llama_seq_id seq_id = -1, 

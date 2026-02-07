@@ -484,8 +484,14 @@ public:
     // Tensor access
     ggml_tensor * get_k(ggml_context * ctx, int32_t il) const override;
     ggml_tensor * get_v(ggml_context * ctx, int32_t il) const override;
-    ggml_tensor * get_r_l(int32_t il) const override { return nullptr; }
-    ggml_tensor * get_s_l(int32_t il) const override { return nullptr; }
+    ggml_tensor * get_r_l(int32_t il) const override { 
+        (void) il; // Не используется, но нужен для совместимости интерфейса
+        return nullptr; 
+    }
+    ggml_tensor * get_s_l(int32_t il) const override { 
+        (void) il; // Не используется, но нужен для совместимости интерфейса
+        return nullptr; 
+    }
     
     // Copy operations
     ggml_tensor * cpy_k(ggml_context * ctx, ggml_tensor * k_cur, ggml_tensor * k_idxs, int32_t il) const override;
@@ -508,7 +514,10 @@ public:
     const llama_memory_hybrid_context * as_hybrid() const override { return nullptr; }
     
     // Helper method
-    int32_t s_copy(int i) const override { return -1; }
+    int32_t s_copy(int i) const override { 
+        (void) i; // Не используется, но нужен для совместимости интерфейса
+        return -1; 
+    }
 
     //
     // llama_kv_cache_context specific API

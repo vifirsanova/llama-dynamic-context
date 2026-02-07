@@ -508,6 +508,8 @@ public:
 
     ggml_context_ptr ctx_compute;
 
+    void extract_attention_scores_after_compute();
+
     // memory buffers used to evaluate the model
     std::vector<uint8_t> buf_compute_meta;
 
@@ -527,6 +529,7 @@ private:
 
 using llm_graph_result_ptr = std::unique_ptr<llm_graph_result>;
 
+void llama_extract_attention_scores_after_compute(llm_graph_result* result);
 //
 // llm_graph_context
 //
@@ -693,6 +696,17 @@ struct llm_graph_context {
     //
     // attention
     //
+
+    ggml_tensor * build_attn_mha_no_flash(
+        ggml_tensor * q,
+        ggml_tensor * k,
+        ggml_tensor * v,
+        ggml_tensor * kq_b,
+        ggml_tensor * kq_mask,
+        ggml_tensor * sinks,
+        ggml_tensor * v_mla,
+              float   kq_scale,
+                int   il) const;
 
     ggml_tensor * build_attn_mha(
             ggml_tensor * q,       // [n_embd_head_q, n_head_q, n_tokens]

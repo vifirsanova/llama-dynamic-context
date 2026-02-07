@@ -1466,6 +1466,24 @@ extern "C" {
             ggml_opt_epoch_callback   callback_train,
             ggml_opt_epoch_callback   callback_eval);
 
+    // Reverse attention debug API
+    LLAMA_API void enable_reverse_attention_debug(bool enable);
+    LLAMA_API void llama_extract_attention_scores_after_compute();
+
+    // Callback for attention scores
+    typedef void (*llama_attention_debug_callback)(
+	    void * user_data,
+	    int layer,
+	    const float * attention_scores,
+	    size_t n_kv,
+	    size_t n_tokens
+    );
+
+    LLAMA_API void llama_set_attention_debug_callback(
+		    llama_attention_debug_callback callback,
+		    void * user_data
+		    );
+
 #ifdef __cplusplus
 }
 #endif

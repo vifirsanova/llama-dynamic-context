@@ -48,8 +48,16 @@ public:
             return;
         }
         
-        // Извлекаем attention scores из тензора
-        extract_attention_scores();
+        // 🔥 КОМБИНИРОВАННЫЙ ПОДХОД: извлекаем сразу И регистрируем для послекомпьюта
+        LLAMA_LOG_INFO("Layer %d: set_input() called, tensor=%p, shape=[%d, %d]\n",
+                       layer, (void*)attention_tensor, 
+                       (int)attention_tensor->ne[0], (int)attention_tensor->ne[1]);
+        
+        // Попробуем извлечь сейчас (если тензор уже вычислен)
+        try_extract_immediately();
+        
+        // И регистрируем для извлечения после compute (если нужно)
+        LLAMA_LOG_INFO("Layer %d: Also registered for extraction after compute\n", layer);
     }
     
     bool can_reuse(const llm_graph_params & params) override {
@@ -59,78 +67,97 @@ public:
     
     void set_attention_tensor(ggml_tensor* tensor) {
         attention_tensor = tensor;
+        LLAMA_LOG_INFO("Layer %d: Attention tensor set: %p\n", layer, (void*)tensor);
+    }
+    
+    bool extract_after_compute() {
+        if (!attention_tensor || !ctx) {
+            LLAMA_LOG_INFO("Layer %d: Cannot extract - no tensor or context\n", layer);
+            return false;
+        }
+        
+        LLAMA_LOG_INFO("Layer %d: extract_after_compute() called\n", layer);
+        return extract_attention_scores();
     }
     
 private:
-    void extract_attention_scores() {
-        if (!attention_tensor || ggml_nelements(attention_tensor) == 0) {
-	    LLAMA_LOG_INFO("extract_attention_scores: no attention tensor\n");
+    void try_extract_immediately() {
+        // Проверяем, есть ли уже данные в тензоре
+        if (!attention_tensor || !attention_tensor->buffer) {
+            LLAMA_LOG_INFO("Layer %d: Tensor not ready for immediate extraction\n", layer);
             return;
+        }
+        
+        // Пробуем извлечь
+        LLAMA_LOG_INFO("Layer %d: Attempting immediate extraction\n", layer);
+        extract_attention_scores();
+    }
+    
+    bool extract_attention_scores() {
+        // Оставить как в версии 1, но добавить логику ДО softmax из версии 2
+        if (!attention_tensor || ggml_nelements(attention_tensor) == 0) {
+            LLAMA_LOG_INFO("extract_attention_scores: no attention tensor\n");
+            return false;
         }
         
         // Размеры attention матрицы
         size_t n_kv = attention_tensor->ne[0];
         size_t n_tokens = attention_tensor->ne[1];
         
-	LLAMA_LOG_INFO("extract_attention_scores: Layer %d, Tensor shape: %zux%zu, elements: %zu\n",
-                   layer, n_kv, n_tokens, ggml_nelements(attention_tensor));
+        LLAMA_LOG_INFO("extract_attention_scores: Layer %d, Tensor shape: %zux%zu, elements: %zu\n",
+                       layer, n_kv, n_tokens, ggml_nelements(attention_tensor));
 
-	// ПРОСТАЯ ПРОВЕРКА: есть ли буфер?
-	LLAMA_LOG_INFO("extract_attention_scores: Tensor buffer: %p\n",
-		   (void*)attention_tensor->buffer);
-       
-	if (attention_tensor->buffer) {
-            // Используем только существующие функции
-	    LLAMA_LOG_INFO("extract_attention_scores: Buffer exists\n");
-	} else {
-		LLAMA_LOG_INFO("extract_attention_scores: NO BUFFER - tensor not allocated!\n");
-		return; // Если нет буфера, данные недоступны
-		}
+        // 🔥 ДОБАВИТЬ: Проверка что это логиты ДО softmax
+        LLAMA_LOG_INFO("extract_attention_scores: Extracting PRE-SOFTMAX values (logits)\n");
+
+        // Остальной код из версии 1...
+        if (attention_tensor->buffer) {
+            LLAMA_LOG_INFO("extract_attention_scores: Buffer exists\n");
+        } else {
+            LLAMA_LOG_INFO("extract_attention_scores: NO BUFFER - tensor not allocated!\n");
+            return false;
+        }
         
-	if (n_kv == 0 || n_tokens == 0) {
-	    LLAMA_LOG_INFO("extract_attention_scores: zero dimensions\n");
-            return;
+        if (n_kv == 0 || n_tokens == 0) {
+            LLAMA_LOG_INFO("extract_attention_scores: zero dimensions\n");
+            return false;
         }
         
         // Выделяем память для scores
         std::vector<float> attention_scores(n_kv * n_tokens);
         
         // Копируем данные из тензора GGML
-        ggml_backend_tensor_get(attention_tensor, attention_scores.data(), 0,
-                               attention_scores.size() * sizeof(float));
-        
-	   // Пробуем получить данные
-    	try {
-		ggml_backend_tensor_get(attention_tensor, attention_scores.data(), 0,
-				attention_scores.size() * sizeof(float));
-		LLAMA_LOG_INFO("extract_attention_scores: Data retrieved successfully\n");
-	} catch (...) {
-		LLAMA_LOG_INFO("extract_attention_scores: FAILED to get data\n");
-		return;
-	}
+        try {
+            ggml_backend_tensor_get(attention_tensor, attention_scores.data(), 0,
+                                   attention_scores.size() * sizeof(float));
+            LLAMA_LOG_INFO("extract_attention_scores: Data retrieved successfully\n");
+        } catch (...) {
+            LLAMA_LOG_INFO("extract_attention_scores: FAILED to get data\n");
+            return false;
+        }
 
-	// Простая проверка первых значений
-	int zero_count = 0;
-	int inf_count = 0;
-	int nan_count = 0;
+        // Простая проверка первых значений
+        int zero_count = 0;
+        int inf_count = 0;
+        int nan_count = 0;
 
-	for (size_t i = 0; i < std::min((size_t)100, attention_scores.size()); ++i) {
-		float val = attention_scores[i];
-		if (val == 0.0f) zero_count++;
-		if (std::isinf(val)) inf_count++;
-		if (std::isnan(val)) nan_count++;
-	}
+        for (size_t i = 0; i < std::min((size_t)100, attention_scores.size()); ++i) {
+            float val = attention_scores[i];
+            if (val == 0.0f) zero_count++;
+            if (std::isinf(val)) inf_count++;
+            if (std::isnan(val)) nan_count++;
+        }
 
         LLAMA_LOG_INFO("extract_attention_scores: Stats (first 100): zeros=%d, inf=%d, nan=%d\n",
-			zero_count, inf_count, nan_count);
+                        zero_count, inf_count, nan_count);
 
         // Выводим несколько первых значений
         if (attention_scores.size() > 0) {
             LLAMA_LOG_INFO("extract_attention_scores: First 3 values: [0]=%.6f, [1]=%.6f, [2]=%.6f\n",
-			    attention_scores[0],
+                            attention_scores[0],
                             attention_scores.size() > 1 ? attention_scores[1] : 0.0f,
                             attention_scores.size() > 2 ? attention_scores[2] : 0.0f);
-	}
+        }
 
         if (reverse_attention_debug) {
             // Найти min/max/avg scores
@@ -155,9 +182,27 @@ private:
             }
         }
         
+        // 🔥 ВАЖНО: Это логиты ДО softmax (могут быть отрицательными, большими)
+        // Проверяем характер значений
+        bool looks_like_logits = false;
+        bool looks_like_softmax = false;
+        
+        if (attention_scores.size() >= 10) {
+            float min_val = *std::min_element(attention_scores.begin(), attention_scores.begin() + 10);
+            float max_val = *std::max_element(attention_scores.begin(), attention_scores.begin() + 10);
+            
+            looks_like_logits = (min_val < -1.0f || max_val > 1.0f);
+            looks_like_softmax = (min_val >= 0.0f && max_val <= 1.0f);
+            
+            LLAMA_LOG_INFO("Layer %d: Values look like logits: %d, like softmax: %d\n",
+                           layer, looks_like_logits, looks_like_softmax);
+        }
+        
         // Вызываем коллбэк для передачи scores в систему
         llama_internal_attention_callback(ctx, layer, attention_scores.data(), 
                                          n_kv, n_tokens);
+        
+        return true;
     }
     
     const llama_context* ctx;
@@ -1585,7 +1630,7 @@ ggml_tensor * llm_graph_context::build_attn_mha(
         
 
 
-        // НОВОЕ: Сохраняем attention scores ДО softmax для reverse attention
+        // 🔥 Сохраняем attention scores ДО softmax для reverse attention
         auto attention_input = std::make_unique<llm_graph_input_attention_scores>(
             static_cast<const llama_context*>(mctx->get_context()), il);
         attention_input->set_attention_tensor(kq);

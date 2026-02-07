@@ -2127,32 +2127,14 @@ float llama_kv_cache::calculate_token_importance(
     const attention_score_data& scores,
     const reverse_attention_trim_params& params) const {
     
-    // Базовый скоринг
-    float importance = 1.0f;
-    
-    // 1. Использовать реальные attention scores если есть
-    if (!scores.scores.empty() && scores.aggregated_score > 0) {
-        importance *= (1.0f + scores.aggregated_score * 5.0f);
+    // НАУКА: importance = attention score, и точка.
+    // Бонусы для бабушек и system prompt - это не science, это engineering.
+    if (!scores.scores.empty()) {
+        return scores.aggregated_score;  // 0.0-1.0
     }
-    
-    // 2. Ранние токены важнее (позиционный фактор)
-    llama_pos max_position = get_current_max_position();
-    if (max_position > 0) {
-        float position_ratio = 1.0f - (float)position / (float)max_position;
-        importance *= (1.0f + position_ratio * 2.0f); // Ранние токены получают бонус
-    }
-    
-    // 3. Системный промпт очень важен
-    if (position < params.system_prompt_end_pos) {
-        importance *= params.system_prompt_weight;
-    }
-    
-    // 4. Recent tokens получают небольшой бонус
-    if (position > max_position - 10) {
-        importance *= params.recent_token_weight;
-    }
-    
-    return importance;
+    // Если у токена нет scores (не бывает в правильной системе),
+    // считаем его средневажным - пусть живет
+    return 0.5f;
 }
 
 // Select tokens to trim based on reverse attention - УСОВЕРШЕНСТВОВАННАЯ ВЕРСИЯ
@@ -2232,9 +2214,9 @@ std::vector<llama_pos> llama_kv_cache::select_tokens_to_trim_reverse(
         }
         
         // Пропускаем очень важные токены
-        if (token.importance > mutable_params.min_attention_score * 10.0f) {
-            continue;
-        }
+        if (token.importance > mutable_params.min_attention_score) {
+		continue;  // Сохраняем достаточно важные токены
+	}
         
         tokens_to_evict.push_back(token.position);
         selected++;
@@ -2994,7 +2976,7 @@ llama_pos llama_kv_cache::get_api_max_position() const {
         }
     }
     
-    return global_max != -1 ? global_max : 0;
+    return global_max;
 }
 
 //

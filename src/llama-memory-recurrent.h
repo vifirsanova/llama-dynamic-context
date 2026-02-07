@@ -66,16 +66,19 @@ public:
     llama_pos get_current_max_position() const override;
     
     // Attention tracking (stubs for compatibility)
-    void enable_attention_tracking(bool enabled) override {}
+    void enable_attention_tracking([[maybe_unused]] bool enabled) override {}
     bool is_attention_tracking_enabled() const override { return false; }
-    void set_attention_callback(llama_attention_callback callback, void* user_data) override {}
+    void set_attention_callback([[maybe_unused]] llama_attention_callback callback, [[maybe_unused]] void* user_data) override {}
     void clear_attention_scores() override {}
-    void register_attention_scores(int layer, const std::vector<float>& attention_matrix, 
-                                   size_t n_kv, size_t n_tokens) override {}
+    void register_attention_scores([[maybe_unused]] int layer, 
+                                   [[maybe_unused]] const std::vector<float>& attention_matrix,
+                                   [[maybe_unused]] size_t n_kv, 
+                                   [[maybe_unused]] size_t n_tokens) override {}
     
     // Trimming (stubs for compatibility)
-    void trim_random(int trim_percentage, const std::map<llama_pos, std::string>* token_mapping = nullptr) override {}
-    void trim_reverse_attention_simple(int trim_percentage) override {}
+    void trim_random([[maybe_unused]] int trim_percentage, 
+                     [[maybe_unused]] const std::map<llama_pos, std::string>* token_mapping = nullptr) override {}
+    void trim_reverse_attention_simple([[maybe_unused]] int trim_percentage) override {}
     bool compact() override { return false; }
 
     bool prepare(const std::vector<llama_ubatch> & ubatches);
@@ -190,25 +193,40 @@ public:
     ggml_tensor * get_s_l(int32_t il) const override;
     
     // Copy operations (stubs)
-    ggml_tensor * cpy_k(ggml_context * ctx, ggml_tensor * k_cur, ggml_tensor * k_idxs, int32_t il) const override { return nullptr; }
-    ggml_tensor * cpy_v(ggml_context * ctx, ggml_tensor * v_cur, ggml_tensor * v_idxs, int32_t il) const override { return nullptr; }
+    ggml_tensor * cpy_k([[maybe_unused]] ggml_context * ctx, 
+                        [[maybe_unused]] ggml_tensor * k_cur, 
+                        [[maybe_unused]] ggml_tensor * k_idxs, 
+                        [[maybe_unused]] int32_t il) const override { return nullptr; }
+    ggml_tensor * cpy_v([[maybe_unused]] ggml_context * ctx, 
+                        [[maybe_unused]] ggml_tensor * v_cur, 
+                        [[maybe_unused]] ggml_tensor * v_idxs, 
+                        [[maybe_unused]] int32_t il) const override { return nullptr; }
     
     // Input setup (stubs)
-    ggml_tensor * build_input_k_idxs(ggml_context * ctx, const llama_ubatch & ubatch) const override { return nullptr; }
-    ggml_tensor * build_input_v_idxs(ggml_context * ctx, const llama_ubatch & ubatch) const override { return nullptr; }
+    ggml_tensor * build_input_k_idxs([[maybe_unused]] ggml_context * ctx, 
+                                     [[maybe_unused]] const llama_ubatch & ubatch) const override { return nullptr; }
+    ggml_tensor * build_input_v_idxs([[maybe_unused]] ggml_context * ctx, 
+                                     [[maybe_unused]] const llama_ubatch & ubatch) const override { return nullptr; }
     
-    void set_input_k_idxs(ggml_tensor * dst, const llama_ubatch * ubatch) const override {}
-    void set_input_v_idxs(ggml_tensor * dst, const llama_ubatch * ubatch) const override {}
-    void set_input_k_shift(ggml_tensor * dst) const override {}
-    void set_input_kq_mask(ggml_tensor * dst, const llama_ubatch * ubatch, bool causal_attn) const override {}
-    void set_input_pos_bucket(ggml_tensor * dst, const llama_ubatch * ubatch) const override {}
+    void set_input_k_idxs([[maybe_unused]] ggml_tensor * dst, 
+                          [[maybe_unused]] const llama_ubatch * ubatch) const override {}
+    void set_input_v_idxs([[maybe_unused]] ggml_tensor * dst, 
+                          [[maybe_unused]] const llama_ubatch * ubatch) const override {}
+    void set_input_k_shift([[maybe_unused]] ggml_tensor * dst) const override {}
+    void set_input_kq_mask([[maybe_unused]] ggml_tensor * dst, 
+                           [[maybe_unused]] const llama_ubatch * ubatch, 
+                           [[maybe_unused]] bool causal_attn) const override {}
+    void set_input_pos_bucket([[maybe_unused]] ggml_tensor * dst, 
+                              [[maybe_unused]] const llama_ubatch * ubatch) const override {}
     
     // Type conversion
     const llama_memory_recurrent_context * as_recurrent() const override { return this; }
     
     // Tensor access for KV cache (stubs)
-    ggml_tensor * get_k(ggml_context * ctx, int32_t il) const override { return nullptr; }
-    ggml_tensor * get_v(ggml_context * ctx, int32_t il) const override { return nullptr; }
+    ggml_tensor * get_k([[maybe_unused]] ggml_context * ctx, 
+                        [[maybe_unused]] int32_t il) const override { return nullptr; }
+    ggml_tensor * get_v([[maybe_unused]] ggml_context * ctx, 
+                        [[maybe_unused]] int32_t il) const override { return nullptr; }
 
     //
     // llama_memory_recurrent_context specific API

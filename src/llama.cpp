@@ -330,15 +330,17 @@ struct llama_model * llama_model_load_from_splits(
 
 // Default parameters for reverse attention trimming
 llama_reverse_attention_params llama_reverse_attention_default_params(void) {
-    llama_reverse_attention_params params = {
-        .trim_threshold = 0.25f,
-        .min_attention_score = 0.01f,
-        .recent_token_weight = 1.5f,
-        .system_prompt_weight = 2.0f,
-        .min_tokens_to_keep = 100,
-        .aggregate_across_layers = true,
-        .use_cumulative_score = true,
-    };
+    llama_reverse_attention_params params;
+    
+    // Initialize all fields explicitly (C++11 compatible)
+    params.trim_threshold = 0.25f;
+    params.min_attention_score = 0.01f;
+    params.recent_token_weight = 1.5f;
+    params.system_prompt_weight = 2.0f;
+    params.min_tokens_to_keep = 100;
+    params.aggregate_across_layers = true;
+    params.use_cumulative_score = true;
+    
     return params;
 }
 
@@ -644,7 +646,7 @@ LLAMA_API void llama_enable_attention_tracking(
 LLAMA_API bool llama_is_attention_tracking_enabled(
     const struct llama_context * ctx) {
     
-    LLAMA_LOG_DEBUG("%s: called for context %p\n", __func__, (void*)ctx);
+    LLAMA_LOG_DEBUG("%s: called for context %p\n", __func__, static_cast<const void*>(ctx));
     
     if (ctx == nullptr) {
         LLAMA_LOG_ERROR("%s: context is null\n", __func__);
@@ -676,7 +678,7 @@ LLAMA_API bool llama_is_attention_tracking_enabled(
 LLAMA_API llama_attention_stats llama_get_attention_statistics(
     const struct llama_context * ctx) {
     
-    LLAMA_LOG_DEBUG("%s: called for context %p\n", __func__, (void*)ctx);
+    LLAMA_LOG_DEBUG("%s: called for context %p\n", __func__, static_cast<const void*>(ctx));
     
     llama_attention_stats stats{};
     
@@ -685,7 +687,7 @@ LLAMA_API llama_attention_stats llama_get_attention_statistics(
         return stats;
     }
     
-    auto* memory = ctx->memory.get();
+    auto* memory = ctx->get_memory();
     if (memory == nullptr) {
         LLAMA_LOG_ERROR("%s: memory interface is null\n", __func__);
         return stats;
@@ -710,7 +712,7 @@ LLAMA_API llama_attention_stats llama_get_attention_statistics(
         stats.memory_reduction = 0.0f; // Нужно трекать отдельно
         
         LLAMA_LOG_DEBUG("%s: retrieved attention statistics for context %p\n", 
-                       __func__, (void*)ctx);
+                       __func__, static_cast<const void*>(ctx));
         
     } catch (const std::exception& e) {
         LLAMA_LOG_ERROR("%s: exception retrieving attention statistics: %s\n", __func__, e.what());
@@ -726,7 +728,7 @@ LLAMA_API void llama_set_attention_callback(
     void * user_data) {
     
     LLAMA_LOG_DEBUG("%s: called for context %p, callback=%p\n", 
-                   __func__, (void*)ctx, (void*)callback);
+                   __func__, (void*)ctx, reinterpret_cast<void*>(callback));
     
     if (ctx == nullptr) {
         LLAMA_LOG_ERROR("%s: context is null\n", __func__);
@@ -809,7 +811,7 @@ LLAMA_API void llama_internal_attention_callback(
     size_t n_tokens) {
     
     LLAMA_LOG_DEBUG("%s: ENTER - ctx=%p, layer=%d, n_kv=%zu, n_tokens=%zu, scores=%p\n", 
-                   __func__, (void*)ctx, layer, n_kv, n_tokens, (void*)attention_scores);
+                   __func__, static_cast<const void*>(ctx), layer, n_kv, n_tokens, static_cast<const void*>(attention_scores));
     
     if (ctx == nullptr || attention_scores == nullptr) {
         LLAMA_LOG_DEBUG("%s: EXIT - null parameters\n", __func__);
@@ -819,7 +821,7 @@ LLAMA_API void llama_internal_attention_callback(
     // Check if tracking is enabled for this context
     auto tracking_it = g_attention_tracking_enabled_internal.find(ctx);
     if (tracking_it == g_attention_tracking_enabled_internal.end() || !tracking_it->second) {
-        LLAMA_LOG_DEBUG("%s: EXIT - tracking disabled for context %p\n", __func__, (void*)ctx);
+        LLAMA_LOG_DEBUG("%s: EXIT - tracking disabled for context %p\n", __func__, static_cast<const void*>(ctx));
         return;
     }
     
@@ -827,11 +829,11 @@ LLAMA_API void llama_internal_attention_callback(
     auto callback_it = g_attention_callbacks.find(ctx);
     if (callback_it != g_attention_callbacks.end()) {
         const auto& [callback, user_data] = callback_it->second;
-        LLAMA_LOG_DEBUG("%s: Found callback %p, calling it...\n", __func__, (void*)callback);
+        LLAMA_LOG_DEBUG("%s: Found callback %p, calling it...\n", __func__, reinterpret_cast<const void*>(callback));
         callback(user_data, layer, attention_scores, n_kv, n_tokens);
         LLAMA_LOG_DEBUG("%s: Callback executed successfully\n", __func__);
     } else {
-        LLAMA_LOG_DEBUG("%s: No callback found for context %p\n", __func__, (void*)ctx);
+        LLAMA_LOG_DEBUG("%s: No callback found for context %p\n", __func__, static_cast<const void*>(ctx));
     }
     
     // Pass to KV cache for internal tracking
@@ -855,7 +857,7 @@ LLAMA_API void llama_internal_attention_callback(
 
 // Clean up callbacks when context is freed
 LLAMA_API void llama_internal_cleanup_attention_callbacks(const llama_context * ctx) {
-    LLAMA_LOG_DEBUG("%s: called for context %p\n", __func__, (void*)ctx);
+    LLAMA_LOG_DEBUG("%s: called for context %p\n", __func__, static_cast<const void*>(ctx));
     
     if (ctx == nullptr) {
         return;
@@ -865,7 +867,7 @@ LLAMA_API void llama_internal_cleanup_attention_callbacks(const llama_context * 
     g_attention_tracking_enabled_internal.erase(ctx);
     
     LLAMA_LOG_INFO("%s: cleaned up attention callbacks for context %p\n", 
-                   __func__, (void*)ctx);
+                   __func__, static_cast<const void*>(ctx));
 }
 
 // Helper function to be called from llama-graph.cpp when attention scores are available
@@ -877,7 +879,25 @@ LLAMA_API void llama_graph_attention_callback(
     size_t n_tokens) {
     
     LLAMA_LOG_INFO("%s: CALLED FROM LLAMA-GRAPH - ctx=%p, layer=%d, n_kv=%zu, n_tokens=%zu\n",
-                  __func__, (void*)ctx, layer, n_kv, n_tokens);
+                  __func__, static_cast<const void*>(ctx), layer, n_kv, n_tokens);
     
     llama_internal_attention_callback(ctx, layer, attention_scores, n_kv, n_tokens);
+}
+
+// Убрал неиспользуемую переменную reverse_attention_debug
+static llama_attention_debug_callback attention_debug_callback = nullptr;
+static void * attention_debug_user_data = nullptr;
+
+void llama_set_attention_debug_callback(
+    llama_attention_debug_callback callback,
+    void * user_data) {
+    attention_debug_callback = callback;
+    attention_debug_user_data = user_data;
+}
+
+// В llama_decode или в функцию, которая создает граф:
+void llama_extract_attention_scores_after_compute() {
+    // Эта функция должна быть вызвана после вычисления графа
+    // В коде уже есть extract_attention_scores_after_compute()
+    // Она будет работать через глобальную переменную reverse_attention_debug
 }
